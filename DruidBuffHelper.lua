@@ -15,6 +15,9 @@ local BUFF_THORNS_TEXTURE = "Interface\\Icons\\Spell_Nature_Thorns"
 local SPELL_MARK_OF_THE_WILD = "Mark of the Wild"
 local SPELL_THORNS = "Thorns"
 
+-- Low buff threshold (seconds)
+local LOW_BUFF_THRESHOLD = 60
+
 -- Colors
 local COLOR_GREEN = {0, 1, 0, 1}
 local COLOR_RED = {1, 0, 0, 1}
@@ -22,6 +25,7 @@ local COLOR_WHITE = {1, 1, 1, 1}
 local COLOR_HEADER = {1, 0.82, 0, 1}
 local COLOR_DARK_GREEN = {0, 0.4, 0, 1}
 local COLOR_DARK_RED = {0.4, 0, 0, 1}
+local COLOR_YELLOW = {1, 1, 0, 1}
 
 -- UI elements
 local mainFrame = nil
@@ -61,28 +65,32 @@ eventFrame:SetScript("OnEvent", function()
     end
 end)
 
--- Check if unit has a buff by texture
+-- Check if unit has a buff by texture; returns hasBuff, timeLeftSeconds (nil if unknown)
 function DruidBuffHelper:UnitHasBuffTexture(unit, texture)
     local i = 1
     while true do
-        local buffTexture = UnitBuff(unit, i)
-        if not buffTexture then
-            break
-        end
-        if buffTexture == texture then
-            return true
+        local a, b, c, d, e, duration, expirationTime = UnitBuff(unit, i)
+        local tex = a
+        if not tex then break end
+        if tex == texture then
+            local timeLeft = nil
+            if expirationTime and expirationTime > 0 then
+                timeLeft = expirationTime - GetTime()
+                if timeLeft < 0 then timeLeft = 0 end
+            end
+            return true, timeLeft
         end
         i = i + 1
     end
-    return false
+    return false, nil
 end
 
--- Check if unit has Mark of the Wild (or Gift of the Wild - same icon)
+-- Check if unit has Mark of the Wild (or Gift of the Wild - same icon); returns hasBuff, timeLeft
 function DruidBuffHelper:HasMarkOfTheWild(unit)
     return self:UnitHasBuffTexture(unit, BUFF_MOTW_TEXTURE)
 end
 
--- Check if unit has Thorns
+-- Check if unit has Thorns; returns hasBuff, timeLeft
 function DruidBuffHelper:HasThorns(unit)
     return self:UnitHasBuffTexture(unit, BUFF_THORNS_TEXTURE)
 end
@@ -166,7 +174,11 @@ function DruidBuffHelper:CreateBuffButton(parent, name, xPos, yPos, spellName, i
     btn:SetScript("OnEnter", function()
         GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
         if this.hasBuff then
-            GameTooltip:SetText(this.spellName .. " - Active", COLOR_GREEN[1], COLOR_GREEN[2], COLOR_GREEN[3])
+            if this.lowTime then
+                GameTooltip:SetText(this.spellName .. " - Less than 1 min left!", COLOR_YELLOW[1], COLOR_YELLOW[2], COLOR_YELLOW[3])
+            else
+                GameTooltip:SetText(this.spellName .. " - Active", COLOR_GREEN[1], COLOR_GREEN[2], COLOR_GREEN[3])
+            end
         else
             GameTooltip:SetText("Click to cast " .. this.spellName, COLOR_WHITE[1], COLOR_WHITE[2], COLOR_WHITE[3])
         end
@@ -180,13 +192,20 @@ function DruidBuffHelper:CreateBuffButton(parent, name, xPos, yPos, spellName, i
     return btn
 end
 
--- Update button appearance based on buff status
-function DruidBuffHelper:UpdateBuffButton(btn, hasBuff)
+-- Update button appearance based on buff status (hasBuff, lowTime = < 1 min left)
+function DruidBuffHelper:UpdateBuffButton(btn, hasBuff, lowTime)
     btn.hasBuff = hasBuff
+    btn.lowTime = lowTime
     if hasBuff then
-        btn.icon:SetVertexColor(1, 1, 1, 1)
-        btn.overlay:Hide()
-        btn.border:SetTexture(0, 0.6, 0, 1) -- Green border
+        if lowTime then
+            btn.icon:SetVertexColor(COLOR_YELLOW[1], COLOR_YELLOW[2], COLOR_YELLOW[3], 1)
+            btn.overlay:Hide()
+            btn.border:SetTexture(0.8, 0.8, 0, 1) -- Yellow border
+        else
+            btn.icon:SetVertexColor(1, 1, 1, 1)
+            btn.overlay:Hide()
+            btn.border:SetTexture(0, 0.6, 0, 1) -- Green border
+        end
     else
         btn.icon:SetVertexColor(0.4, 0.4, 0.4, 1)
         btn.overlay:Show()
@@ -329,8 +348,8 @@ function DruidBuffHelper:CleanupBuffState()
     end
 end
 
--- Check buff and alert if it was lost
-function DruidBuffHelper:CheckBuffAndAlert(unit, name, buffType, hasBuff)
+-- Check buff and alert if it was lost; also alert if < 1 min left
+function DruidBuffHelper:CheckBuffAndAlert(unit, name, buffType, hasBuff, timeLeft)
     if not name then return hasBuff end
     
     -- Initialize state for this unit if needed
@@ -339,6 +358,9 @@ function DruidBuffHelper:CheckBuffAndAlert(unit, name, buffType, hasBuff)
     end
     
     local prevState = buffState[name][buffType]
+    local lowTime = timeLeft and timeLeft < LOW_BUFF_THRESHOLD
+    local lowKey = buffType .. "_lowAlert"
+    local prevLowAlert = buffState[name][lowKey]
     
     -- Alert if buff was lost (had it before, doesn't have it now)
     if prevState and not hasBuff then
@@ -348,22 +370,26 @@ function DruidBuffHelper:CheckBuffAndAlert(unit, name, buffType, hasBuff)
         else
             spellName = SPELL_THORNS
         end
-        -- Send to party chat
         local numParty = GetNumPartyMembers()
         if numParty and numParty > 0 then
             SendChatMessage(name .. " needs " .. spellName .. "!", "PARTY")
         else
-            -- Solo - just show locally
             DEFAULT_CHAT_FRAME:AddMessage("|cffff6600[DruidBuffHelper]|r |cffff0000" .. name .. "|r needs |cff00ff00" .. spellName .. "|r!")
         end
     end
     
-    -- Save current state (convert to explicit boolean)
-    if hasBuff then
-        buffState[name][buffType] = true
-    else
-        buffState[name][buffType] = false
+    -- Alert if less than 1 min left (once per drop below threshold)
+    if hasBuff and lowTime and not prevLowAlert then
+        local spellName = buffType == "motw" and SPELL_MARK_OF_THE_WILD or SPELL_THORNS
+        local sec = math.floor(timeLeft)
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff6600[DruidBuffHelper]|r |cffffff00" .. name .. "|r: " .. spellName .. " has less than 1 min left (" .. sec .. "s)!")
+        buffState[name][lowKey] = true
+    elseif not lowTime or not hasBuff then
+        buffState[name][lowKey] = false
     end
+    
+    -- Save current state
+    buffState[name][buffType] = hasBuff
     
     return hasBuff
 end
@@ -398,11 +424,14 @@ function DruidBuffHelper:UpdateBuffPanel()
         row.motwBtn.unit = "player"
         row.thornsBtn.unit = "player"
         
-        local hasMotw = self:CheckBuffAndAlert("player", playerName, "motw", self:HasMarkOfTheWild("player"))
-        local hasThorns = self:CheckBuffAndAlert("player", playerName, "thorns", self:HasThorns("player"))
-        
-        self:UpdateBuffButton(row.motwBtn, hasMotw)
-        self:UpdateBuffButton(row.thornsBtn, hasThorns)
+        local hasMotw, motwTime = self:HasMarkOfTheWild("player")
+        local hasThorns, thornsTime = self:HasThorns("player")
+        hasMotw = self:CheckBuffAndAlert("player", playerName, "motw", hasMotw, motwTime)
+        hasThorns = self:CheckBuffAndAlert("player", playerName, "thorns", hasThorns, thornsTime)
+        local lowMotw = motwTime and motwTime < LOW_BUFF_THRESHOLD
+        local lowThorns = thornsTime and thornsTime < LOW_BUFF_THRESHOLD
+        self:UpdateBuffButton(row.motwBtn, hasMotw, lowMotw)
+        self:UpdateBuffButton(row.thornsBtn, hasThorns, lowThorns)
         
         row.motwBtn:Show()
         row.thornsBtn:Show()
@@ -429,11 +458,14 @@ function DruidBuffHelper:UpdateBuffPanel()
                 row.motwBtn.unit = unit
                 row.thornsBtn.unit = unit
                 
-                local hasMotw = self:CheckBuffAndAlert(unit, name, "motw", self:HasMarkOfTheWild(unit))
-                local hasThorns = self:CheckBuffAndAlert(unit, name, "thorns", self:HasThorns(unit))
-                
-                self:UpdateBuffButton(row.motwBtn, hasMotw)
-                self:UpdateBuffButton(row.thornsBtn, hasThorns)
+                local hasMotw, motwTime = self:HasMarkOfTheWild(unit)
+                local hasThorns, thornsTime = self:HasThorns(unit)
+                hasMotw = self:CheckBuffAndAlert(unit, name, "motw", hasMotw, motwTime)
+                hasThorns = self:CheckBuffAndAlert(unit, name, "thorns", hasThorns, thornsTime)
+                local lowMotw = motwTime and motwTime < LOW_BUFF_THRESHOLD
+                local lowThorns = thornsTime and thornsTime < LOW_BUFF_THRESHOLD
+                self:UpdateBuffButton(row.motwBtn, hasMotw, lowMotw)
+                self:UpdateBuffButton(row.thornsBtn, hasThorns, lowThorns)
                 
                 row.motwBtn:Show()
                 row.thornsBtn:Show()
