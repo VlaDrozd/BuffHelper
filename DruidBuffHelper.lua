@@ -30,6 +30,8 @@ local COLOR_YELLOW = {1, 1, 0, 1}
 -- UI elements
 local mainFrame = nil
 local memberRows = {}
+local modeButton = nil
+local columnHeaders = {}
 
 -- Buff state tracking for alerts
 local buffState = {}
@@ -69,8 +71,8 @@ end)
 function DruidBuffHelper:UnitHasBuffTexture(unit, texture)
     local i = 1
     while true do
-        local a, b, c, d, e, duration, expirationTime = UnitBuff(unit, i)
-        local tex = a
+        -- Turtle WoW UnitBuff returns: texture, stacks, type, duration, expirationTime
+        local tex, stacks, buffType, duration, expirationTime = UnitBuff(unit, i)
         if not tex then break end
         if tex == texture then
             local timeLeft = nil
@@ -103,6 +105,99 @@ function DruidBuffHelper:GetClassColor(unit)
         return {color.r, color.g, color.b, 1}
     end
     return COLOR_WHITE
+end
+
+-- Get buff tracking settings for a character (defaults: both buffs enabled)
+function DruidBuffHelper:GetBuffTracking(characterName)
+    if not characterName then return { motw = true, thorns = true } end
+
+    if not DruidBuffHelperDB.buffTracking then
+        DruidBuffHelperDB.buffTracking = {}
+    end
+
+    if not DruidBuffHelperDB.buffTracking[characterName] then
+        DruidBuffHelperDB.buffTracking[characterName] = { motw = true, thorns = true }
+    end
+
+    return DruidBuffHelperDB.buffTracking[characterName]
+end
+
+-- Set buff tracking for a specific character and buff type
+function DruidBuffHelper:SetBuffTracking(characterName, buffType, enabled)
+    if not characterName then return end
+
+    if not DruidBuffHelperDB.buffTracking then
+        DruidBuffHelperDB.buffTracking = {}
+    end
+
+    if not DruidBuffHelperDB.buffTracking[characterName] then
+        DruidBuffHelperDB.buffTracking[characterName] = { motw = true, thorns = true }
+    end
+
+    DruidBuffHelperDB.buffTracking[characterName][buffType] = enabled
+end
+
+-- Check if member should be shown in operational mode
+function DruidBuffHelper:ShouldShowMember(unit, name)
+    -- In config mode, always show all members
+    if DruidBuffHelperDB.mode == "config" then
+        return true
+    end
+
+    -- In operational mode, hide members who are too far away
+    -- UnitIsVisible returns false if unit is not rendered (too far)
+    -- CheckInteractDistance(unit, 4) checks ~28 yards (close to buff range)
+    if unit ~= "player" then
+        if not UnitIsVisible(unit) then
+            return false
+        end
+        -- CheckInteractDistance 4 = follow distance (~28 yards), close to buff range (30 yards)
+        if not CheckInteractDistance(unit, 4) then
+            return false
+        end
+    end
+
+    -- In operational mode, show only if member needs a tracked buff
+    local tracking = self:GetBuffTracking(name)
+
+    if tracking.motw then
+        local hasBuff, timeLeft = self:HasMarkOfTheWild(unit)
+        if not hasBuff then return true end
+        if timeLeft and timeLeft < LOW_BUFF_THRESHOLD then return true end
+    end
+
+    if tracking.thorns then
+        local hasBuff, timeLeft = self:HasThorns(unit)
+        if not hasBuff then return true end
+        if timeLeft and timeLeft < LOW_BUFF_THRESHOLD then return true end
+    end
+
+    return false
+end
+
+-- Toggle between config and operational modes
+function DruidBuffHelper:ToggleMode()
+    if DruidBuffHelperDB.mode == "config" then
+        DruidBuffHelperDB.mode = "operational"
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r: Operational mode - showing members needing buffs")
+    else
+        DruidBuffHelperDB.mode = "config"
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r: Config mode - configure buff tracking")
+    end
+    self:UpdateModeButton()
+    self:UpdateBuffPanel()
+end
+
+-- Update mode button appearance
+function DruidBuffHelper:UpdateModeButton()
+    if not modeButton then return end
+    if DruidBuffHelperDB.mode == "config" then
+        modeButton.text:SetText("C")
+        modeButton.text:SetTextColor(0, 1, 0, 1)  -- Green for config
+    else
+        modeButton.text:SetText("O")
+        modeButton.text:SetTextColor(1, 0.82, 0, 1)  -- Gold for operational
+    end
 end
 
 -- Cast a buff on a unit
@@ -266,36 +361,135 @@ function DruidBuffHelper:CreateBuffPanel()
         mainFrame:Hide()
         DruidBuffHelperDB.enabled = false
     end)
-    
+
+    -- Mode switch button
+    modeButton = CreateFrame("Button", "DruidBuffHelperModeBtn", mainFrame)
+    modeButton:SetWidth(16)
+    modeButton:SetHeight(14)
+    modeButton:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 6, -7)
+
+    modeButton.text = modeButton:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    modeButton.text:SetAllPoints(modeButton)
+    modeButton.text:SetText("O")
+    modeButton.text:SetTextColor(1, 0.82, 0, 1)
+
+    modeButton:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
+
+    modeButton:SetScript("OnClick", function()
+        DruidBuffHelper:ToggleMode()
+    end)
+
+    modeButton:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+        if DruidBuffHelperDB.mode == "config" then
+            GameTooltip:SetText("Config Mode: Configure which buffs to track.\nClick to switch to Operational Mode.", 1, 1, 1)
+        else
+            GameTooltip:SetText("Operational Mode: Shows members needing buffs.\nClick to switch to Config Mode.", 1, 1, 1)
+        end
+        GameTooltip:Show()
+    end)
+
+    modeButton:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
     -- Column positions
     local col1X = 8
     local col2X = 95
     local col3X = 120
-    
+
+    -- Column headers (shown in config mode only)
+    columnHeaders.motw = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    columnHeaders.motw:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col2X, -22)
+    columnHeaders.motw:SetText("MW")
+    columnHeaders.motw:SetTextColor(0.7, 0.7, 0.7, 1)
+    columnHeaders.motw:Hide()
+
+    columnHeaders.thorns = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    columnHeaders.thorns:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col3X, -22)
+    columnHeaders.thorns:SetText("Th")
+    columnHeaders.thorns:SetTextColor(0.7, 0.7, 0.7, 1)
+    columnHeaders.thorns:Hide()
+
     -- Create rows for player + 4 party members
     local rowHeight = 22
     local startY = -22
-    
+
     for i = 1, 5 do
         local row = {}
         local yPos = startY - (i - 1) * rowHeight
-        
+
         -- Name
         row.name = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         row.name:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col1X, yPos - 5)
         row.name:SetWidth(85)
         row.name:SetJustifyH("LEFT")
         row.name:SetText("")
-        
+
         -- Mark of the Wild button
         row.motwBtn = self:CreateBuffButton(mainFrame, "DruidBuffHelperMotwBtn"..i, col2X, yPos, SPELL_MARK_OF_THE_WILD, BUFF_MOTW_TEXTURE)
         row.motwBtn:Hide()
-        
+
         -- Thorns button
         row.thornsBtn = self:CreateBuffButton(mainFrame, "DruidBuffHelperThornsBtn"..i, col3X, yPos, SPELL_THORNS, BUFF_THORNS_TEXTURE)
         row.thornsBtn:Hide()
-        
+
+        -- Mark of the Wild checkbox (for config mode)
+        row.motwCheckbox = CreateFrame("CheckButton", "DruidBuffHelperMotwCb"..i, mainFrame, "UICheckButtonTemplate")
+        row.motwCheckbox:SetWidth(20)
+        row.motwCheckbox:SetHeight(20)
+        row.motwCheckbox:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col2X, yPos)
+        row.motwCheckbox:SetChecked(true)
+        row.motwCheckbox:Hide()
+        row.motwCheckbox.rowIndex = i
+
+        row.motwCheckbox:SetScript("OnClick", function()
+            local rowIdx = this.rowIndex
+            local charName = memberRows[rowIdx].characterName
+            if charName then
+                DruidBuffHelper:SetBuffTracking(charName, "motw", this:GetChecked())
+            end
+        end)
+
+        row.motwCheckbox:SetScript("OnEnter", function()
+            GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Track Mark of the Wild", 1, 1, 1)
+            GameTooltip:Show()
+        end)
+
+        row.motwCheckbox:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
+
+        -- Thorns checkbox (for config mode)
+        row.thornsCheckbox = CreateFrame("CheckButton", "DruidBuffHelperThornsCb"..i, mainFrame, "UICheckButtonTemplate")
+        row.thornsCheckbox:SetWidth(20)
+        row.thornsCheckbox:SetHeight(20)
+        row.thornsCheckbox:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col3X, yPos)
+        row.thornsCheckbox:SetChecked(true)
+        row.thornsCheckbox:Hide()
+        row.thornsCheckbox.rowIndex = i
+
+        row.thornsCheckbox:SetScript("OnClick", function()
+            local rowIdx = this.rowIndex
+            local charName = memberRows[rowIdx].characterName
+            if charName then
+                DruidBuffHelper:SetBuffTracking(charName, "thorns", this:GetChecked())
+            end
+        end)
+
+        row.thornsCheckbox:SetScript("OnEnter", function()
+            GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Track Thorns", 1, 1, 1)
+            GameTooltip:Show()
+        end)
+
+        row.thornsCheckbox:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
+
         row.unit = nil
+        row.characterName = nil
         row.visible = false
         memberRows[i] = row
     end
@@ -399,86 +593,130 @@ function DruidBuffHelper:UpdateBuffPanel()
     if not addonLoaded then return end
     if not mainFrame then return end
     if not DruidBuffHelperDB or not DruidBuffHelperDB.enabled then return end
-    
+
+    local isConfigMode = (DruidBuffHelperDB.mode == "config")
+
+    -- Show/hide column headers based on mode
+    if isConfigMode then
+        columnHeaders.motw:Show()
+        columnHeaders.thorns:Show()
+    else
+        columnHeaders.motw:Hide()
+        columnHeaders.thorns:Hide()
+    end
+
     -- Hide all rows first
     for i = 1, 5 do
         memberRows[i].name:SetText("")
         memberRows[i].motwBtn:Hide()
         memberRows[i].thornsBtn:Hide()
+        memberRows[i].motwCheckbox:Hide()
+        memberRows[i].thornsCheckbox:Hide()
         memberRows[i].unit = nil
+        memberRows[i].characterName = nil
         memberRows[i].visible = false
     end
-    
+
     local rowIndex = 1
-    
-    -- Always show player first
-    local playerName = UnitName("player")
-    if playerName then
+
+    -- Layout constants
+    local col1X = 8
+    local col2X = 95
+    local col3X = 120
+    local rowHeight = 22
+    local startY = isConfigMode and -34 or -22
+
+    -- Helper function to display a member
+    local function displayMember(unit, name)
+        if not self:ShouldShowMember(unit, name) then
+            return false
+        end
+
         local row = memberRows[rowIndex]
-        local classColor = self:GetClassColor("player")
-        row.name:SetText(playerName)
+        local yPos = startY - (rowIndex - 1) * rowHeight
+
+        -- Reposition elements based on mode
+        row.name:ClearAllPoints()
+        row.name:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col1X, yPos - 5)
+
+        row.motwBtn:ClearAllPoints()
+        row.motwBtn:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col2X, yPos)
+        row.thornsBtn:ClearAllPoints()
+        row.thornsBtn:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col3X, yPos)
+
+        row.motwCheckbox:ClearAllPoints()
+        row.motwCheckbox:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col2X, yPos)
+        row.thornsCheckbox:ClearAllPoints()
+        row.thornsCheckbox:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col3X, yPos)
+
+        local classColor = self:GetClassColor(unit)
+        row.name:SetText(name)
         row.name:SetTextColor(classColor[1], classColor[2], classColor[3], classColor[4])
-        row.unit = "player"
-        
-        -- Update buttons with alert check
-        row.motwBtn.unit = "player"
-        row.thornsBtn.unit = "player"
-        
-        local hasMotw, motwTime = self:HasMarkOfTheWild("player")
-        local hasThorns, thornsTime = self:HasThorns("player")
-        hasMotw = self:CheckBuffAndAlert("player", playerName, "motw", hasMotw, motwTime)
-        hasThorns = self:CheckBuffAndAlert("player", playerName, "thorns", hasThorns, thornsTime)
-        local lowMotw = motwTime and motwTime < LOW_BUFF_THRESHOLD
-        local lowThorns = thornsTime and thornsTime < LOW_BUFF_THRESHOLD
-        self:UpdateBuffButton(row.motwBtn, hasMotw, lowMotw)
-        self:UpdateBuffButton(row.thornsBtn, hasThorns, lowThorns)
-        
-        row.motwBtn:Show()
-        row.thornsBtn:Show()
-        
+        row.unit = unit
+        row.characterName = name
+
+        local tracking = self:GetBuffTracking(name)
+
+        if isConfigMode then
+            -- Config mode: show checkboxes, hide buttons
+            row.motwCheckbox:SetChecked(tracking.motw)
+            row.motwCheckbox:Show()
+            row.thornsCheckbox:SetChecked(tracking.thorns)
+            row.thornsCheckbox:Show()
+        else
+            -- Operational mode: show buttons, hide checkboxes
+            row.motwBtn.unit = unit
+            row.thornsBtn.unit = unit
+
+            local hasMotw, motwTime = self:HasMarkOfTheWild(unit)
+            local hasThorns, thornsTime = self:HasThorns(unit)
+
+            -- Only alert for tracked buffs
+            if tracking.motw then
+                hasMotw = self:CheckBuffAndAlert(unit, name, "motw", hasMotw, motwTime)
+            end
+            if tracking.thorns then
+                hasThorns = self:CheckBuffAndAlert(unit, name, "thorns", hasThorns, thornsTime)
+            end
+
+            local lowMotw = motwTime and motwTime < LOW_BUFF_THRESHOLD
+            local lowThorns = thornsTime and thornsTime < LOW_BUFF_THRESHOLD
+
+            self:UpdateBuffButton(row.motwBtn, hasMotw, lowMotw)
+            self:UpdateBuffButton(row.thornsBtn, hasThorns, lowThorns)
+
+            row.motwBtn:Show()
+            row.thornsBtn:Show()
+        end
+
         row.visible = true
         rowIndex = rowIndex + 1
+        return true
     end
-    
+
+    -- Show player first
+    local playerName = UnitName("player")
+    if playerName then
+        displayMember("player", playerName)
+    end
+
     -- Check party members (1.12 style)
     local numPartyMembers = GetNumPartyMembers()
     if numPartyMembers and numPartyMembers > 0 then
         for i = 1, numPartyMembers do
             local unit = "party" .. i
             local name = UnitName(unit)
-            
+
             if name and UnitExists(unit) then
-                local row = memberRows[rowIndex]
-                local classColor = self:GetClassColor(unit)
-                row.name:SetText(name)
-                row.name:SetTextColor(classColor[1], classColor[2], classColor[3], classColor[4])
-                row.unit = unit
-                
-                -- Update buttons with alert check
-                row.motwBtn.unit = unit
-                row.thornsBtn.unit = unit
-                
-                local hasMotw, motwTime = self:HasMarkOfTheWild(unit)
-                local hasThorns, thornsTime = self:HasThorns(unit)
-                hasMotw = self:CheckBuffAndAlert(unit, name, "motw", hasMotw, motwTime)
-                hasThorns = self:CheckBuffAndAlert(unit, name, "thorns", hasThorns, thornsTime)
-                local lowMotw = motwTime and motwTime < LOW_BUFF_THRESHOLD
-                local lowThorns = thornsTime and thornsTime < LOW_BUFF_THRESHOLD
-                self:UpdateBuffButton(row.motwBtn, hasMotw, lowMotw)
-                self:UpdateBuffButton(row.thornsBtn, hasThorns, lowThorns)
-                
-                row.motwBtn:Show()
-                row.thornsBtn:Show()
-                
-                row.visible = true
-                rowIndex = rowIndex + 1
+                displayMember(unit, name)
             end
         end
     end
-    
+
     -- Adjust frame height based on visible rows
     local visibleRows = rowIndex - 1
-    local newHeight = 28 + (visibleRows * 22)
+    local headerOffset = isConfigMode and 12 or 0
+    local newHeight = 28 + headerOffset + (visibleRows * 22)
     mainFrame:SetHeight(math.max(50, newHeight))
 end
 
@@ -490,22 +728,35 @@ function DruidBuffHelper:OnAddonLoaded()
             initialized = true,
             enabled = true,
             position = nil,
+            mode = "operational",
+            buffTracking = {},
         }
     end
-    
+
+    -- Migration: add new fields to existing DB
+    if not DruidBuffHelperDB.mode then
+        DruidBuffHelperDB.mode = "operational"
+    end
+    if not DruidBuffHelperDB.buffTracking then
+        DruidBuffHelperDB.buffTracking = {}
+    end
+
     -- Initialize addon components
     self:InitializeSlashCommands()
     self:CreateBuffPanel()
-    
+
     addonLoaded = true
-    
+
+    -- Update mode button to match saved state
+    self:UpdateModeButton()
+
     -- Force show the panel and update it
     if mainFrame then
         DruidBuffHelperDB.enabled = true
         mainFrame:Show()
         self:UpdateBuffPanel()
     end
-    
+
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r loaded! Type /dbh for commands.")
 end
 
@@ -525,10 +776,10 @@ function DruidBuffHelper:InitializeSlashCommands()
         -- 1.12 style string parsing (no string:match)
         msg = msg or ""
         local command = string.lower(msg)
-        
+
         -- Remove leading/trailing spaces
         command = string.gsub(command, "^%s*(.-)%s*$", "%1")
-        
+
         if command == "help" then
             DruidBuffHelper:PrintHelp()
         elseif command == "toggle" or command == "show" then
@@ -537,6 +788,18 @@ function DruidBuffHelper:InitializeSlashCommands()
             DruidBuffHelper:HidePanel()
         elseif command == "reset" then
             DruidBuffHelper:ResetPosition()
+        elseif command == "mode" then
+            DruidBuffHelper:ToggleMode()
+        elseif command == "config" then
+            DruidBuffHelperDB.mode = "config"
+            DruidBuffHelper:UpdateModeButton()
+            DruidBuffHelper:UpdateBuffPanel()
+            DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r: Config mode - configure buff tracking")
+        elseif command == "op" or command == "operational" then
+            DruidBuffHelperDB.mode = "operational"
+            DruidBuffHelper:UpdateModeButton()
+            DruidBuffHelper:UpdateBuffPanel()
+            DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r: Operational mode - showing members needing buffs")
         else
             DruidBuffHelper:Toggle()
         end
@@ -550,6 +813,9 @@ function DruidBuffHelper:PrintHelp()
     DEFAULT_CHAT_FRAME:AddMessage("  /dbh toggle - Toggle the buff panel")
     DEFAULT_CHAT_FRAME:AddMessage("  /dbh hide - Hide the buff panel")
     DEFAULT_CHAT_FRAME:AddMessage("  /dbh reset - Reset panel position")
+    DEFAULT_CHAT_FRAME:AddMessage("  /dbh mode - Toggle config/operational mode")
+    DEFAULT_CHAT_FRAME:AddMessage("  /dbh config - Switch to config mode")
+    DEFAULT_CHAT_FRAME:AddMessage("  /dbh op - Switch to operational mode")
     DEFAULT_CHAT_FRAME:AddMessage("  /dbh help - Show this help message")
 end
 
