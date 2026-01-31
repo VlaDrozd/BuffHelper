@@ -331,6 +331,28 @@ local BuffProfiles = {
     },
 }
 
+-- Tracking Profiles - profession tracking abilities (not class-specific)
+local TrackingProfiles = {
+    {
+        id = "findherbs",
+        spellName = "Find Herbs",
+        texture = "Interface\\Icons\\INV_Misc_Flower_02",
+        displayName = "Herbs",
+    },
+    {
+        id = "findminerals",
+        spellName = "Find Minerals",
+        texture = "Interface\\Icons\\Spell_Nature_Earthquake",
+        displayName = "Minerals",
+    },
+    {
+        id = "findtreasure",
+        spellName = "Find Treasure",
+        texture = "Interface\\Icons\\Racial_Dwarf_FindTreasure",
+        displayName = "Chests",
+    },
+}
+
 -- Active profile (cached after first detection)
 local activeProfile = nil
 
@@ -354,6 +376,11 @@ local thresholdInputs = {}
 -- Buff state tracking for alerts
 local buffState = {}
 
+-- Tracking section UI elements
+local trackingSection = nil
+local trackingCheckboxes = {}
+local trackingButton = nil
+
 -- Create main frame for event handling
 local eventFrame = CreateFrame("Frame")
 local updateElapsed = 0
@@ -365,6 +392,8 @@ eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("PARTY_MEMBERS_CHANGED")
 eventFrame:RegisterEvent("UNIT_AURA")
 eventFrame:RegisterEvent("SPELLCAST_STOP")
+eventFrame:RegisterEvent("MINIMAP_UPDATE_TRACKING")
+eventFrame:RegisterEvent("PLAYER_DEAD")
 
 -- Periodic update to catch buff time changes
 eventFrame:SetScript("OnUpdate", function()
@@ -394,6 +423,12 @@ eventFrame:SetScript("OnEvent", function()
         end
     elseif event == "SPELLCAST_STOP" then
         -- Update panel after casting
+        BuffHelper:UpdateBuffPanel()
+    elseif event == "MINIMAP_UPDATE_TRACKING" then
+        -- Tracking ability changed (e.g., Find Herbs enabled/disabled)
+        BuffHelper:UpdateBuffPanel()
+    elseif event == "PLAYER_DEAD" then
+        -- Tracking gets disabled on death, update panel
         BuffHelper:UpdateBuffPanel()
     end
 end)
@@ -702,6 +737,41 @@ function BuffHelper:GetVisibleBuffIndexes(visibleBuffs)
     return indexes
 end
 
+-- Check if a specific tracking ability is active (by texture)
+function BuffHelper:IsTrackingActive(texture)
+    local activeTexture = GetTrackingTexture()
+    return activeTexture == texture
+end
+
+-- Get profession tracking setting from saved variables
+function BuffHelper:GetProfessionTracking(trackingId)
+    if not BuffHelperDB or not BuffHelperDB.professionTracking then
+        return false
+    end
+    return BuffHelperDB.professionTracking[trackingId] or false
+end
+
+-- Set profession tracking setting
+function BuffHelper:SetProfessionTracking(trackingId, enabled)
+    if not BuffHelperDB.professionTracking then
+        BuffHelperDB.professionTracking = {}
+    end
+    BuffHelperDB.professionTracking[trackingId] = enabled
+end
+
+-- Check if any enabled tracking is currently inactive
+-- Returns: hasMissing (bool), trackDef (first missing tracking definition)
+function BuffHelper:HasMissingTracking()
+    for _, trackDef in ipairs(TrackingProfiles) do
+        if self:GetProfessionTracking(trackDef.id) then
+            if not self:IsTrackingActive(trackDef.texture) then
+                return true, trackDef
+            end
+        end
+    end
+    return false, nil
+end
+
 -- Toggle between config and operational modes
 function BuffHelper:ToggleMode()
     if BuffHelperDB.mode == "config" then
@@ -974,6 +1044,28 @@ function BuffHelper:CreateBuffPanel()
     thresholdLabel:Hide()
     mainFrame.thresholdLabel = thresholdLabel
 
+    -- Tooltip frame for threshold label (FontStrings can't receive mouse events)
+    local thresholdTooltipFrame = CreateFrame("Frame", nil, mainFrame)
+    thresholdTooltipFrame:SetWidth(50)
+    thresholdTooltipFrame:SetHeight(14)
+    thresholdTooltipFrame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col1X, -37)
+    thresholdTooltipFrame:EnableMouse(true)
+    thresholdTooltipFrame:Hide()
+
+    thresholdTooltipFrame:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Low Time Alert Threshold", 1, 0.82, 0)
+        GameTooltip:AddLine("When a buff has less than this many seconds", 1, 1, 1)
+        GameTooltip:AddLine("remaining, it will turn yellow as a warning.", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+
+    thresholdTooltipFrame:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
+    mainFrame.thresholdTooltipFrame = thresholdTooltipFrame
+
     -- Create threshold input EditBoxes (below headers, only in config mode)
     for buffIdx, buffDef in ipairs(profile.buffs) do
         local colX = buffStartX + (buffIdx - 1) * colWidth
@@ -1122,6 +1214,120 @@ function BuffHelper:CreateBuffPanel()
         memberRows[i] = row
     end
 
+    -- Create tracking section (appears at bottom of panel)
+    trackingSection = CreateFrame("Frame", "BuffHelperTrackingSection", mainFrame)
+    trackingSection:SetWidth(baseWidth - 16)
+    trackingSection:SetHeight(50)
+    trackingSection:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 8, -130)  -- Position updated dynamically
+    trackingSection:Hide()
+
+    -- Separator line
+    local separator = trackingSection:CreateTexture(nil, "ARTWORK")
+    separator:SetWidth(baseWidth - 20)
+    separator:SetHeight(1)
+    separator:SetPoint("TOP", trackingSection, "TOP", 0, 0)
+    separator:SetTexture(0.4, 0.4, 0.4, 0.8)
+    trackingSection.separator = separator
+
+    -- Title for config mode
+    local trackingTitle = trackingSection:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    trackingTitle:SetPoint("TOPLEFT", trackingSection, "TOPLEFT", 0, -5)
+    trackingTitle:SetText("Profession Tracking")
+    trackingTitle:SetTextColor(COLOR_HEADER[1], COLOR_HEADER[2], COLOR_HEADER[3], COLOR_HEADER[4])
+    trackingSection.title = trackingTitle
+
+    -- Create checkboxes for each tracking ability (config mode)
+    local trackingStartX = 0
+    local trackingSpacing = 55  -- Spacing between tracking checkboxes
+    for trackIdx, trackDef in ipairs(TrackingProfiles) do
+        local cb = CreateFrame("CheckButton", "BuffHelperTrackCb"..trackDef.id, trackingSection, "UICheckButtonTemplate")
+        cb:SetWidth(20)
+        cb:SetHeight(20)
+        cb:SetPoint("TOPLEFT", trackingSection, "TOPLEFT", trackingStartX + (trackIdx - 1) * trackingSpacing, -18)
+        cb:SetChecked(false)
+        cb.trackingId = trackDef.id
+        cb.spellName = trackDef.spellName
+
+        -- Label next to checkbox
+        local label = trackingSection:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        label:SetPoint("LEFT", cb, "RIGHT", 0, 0)
+        label:SetText(trackDef.displayName)
+        label:SetTextColor(0.9, 0.9, 0.9, 1)
+        cb.label = label
+
+        cb:SetScript("OnClick", function()
+            BuffHelper:SetProfessionTracking(this.trackingId, this:GetChecked())
+        end)
+
+        cb:SetScript("OnEnter", function()
+            GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Track " .. this.spellName, 1, 1, 1)
+            GameTooltip:Show()
+        end)
+
+        cb:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
+
+        trackingCheckboxes[trackIdx] = cb
+    end
+
+    -- Create tracking status button for operational mode
+    trackingButton = CreateFrame("Button", "BuffHelperTrackingBtn", trackingSection)
+    trackingButton:SetWidth(70)
+    trackingButton:SetHeight(22)
+    trackingButton:SetPoint("TOPLEFT", trackingSection, "TOPLEFT", 0, -5)
+    trackingButton:Hide()
+
+    -- Icon
+    local btnIcon = trackingButton:CreateTexture(nil, "ARTWORK")
+    btnIcon:SetWidth(18)
+    btnIcon:SetHeight(18)
+    btnIcon:SetPoint("LEFT", trackingButton, "LEFT", 2, 0)
+    btnIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    trackingButton.icon = btnIcon
+
+    -- Red overlay
+    local btnOverlay = trackingButton:CreateTexture(nil, "OVERLAY")
+    btnOverlay:SetWidth(18)
+    btnOverlay:SetHeight(18)
+    btnOverlay:SetPoint("LEFT", trackingButton, "LEFT", 2, 0)
+    btnOverlay:SetTexture(1, 0, 0, 0.5)
+    trackingButton.overlay = btnOverlay
+
+    -- Text
+    local btnText = trackingButton:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    btnText:SetPoint("LEFT", btnIcon, "RIGHT", 4, 0)
+    btnText:SetTextColor(1, 0.3, 0.3, 1)
+    trackingButton.text = btnText
+
+    -- Border
+    local btnBorder = trackingButton:CreateTexture(nil, "BACKGROUND")
+    btnBorder:SetWidth(22)
+    btnBorder:SetHeight(22)
+    btnBorder:SetPoint("LEFT", trackingButton, "LEFT", 0, 0)
+    btnBorder:SetTexture(0.6, 0, 0, 1)
+    trackingButton.border = btnBorder
+
+    -- Highlight
+    trackingButton:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
+
+    trackingButton:SetScript("OnClick", function()
+        if this.spellName then
+            CastSpellByName(this.spellName)
+        end
+    end)
+
+    trackingButton:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Click to activate " .. (this.spellName or "tracking"), 1, 1, 1)
+        GameTooltip:Show()
+    end)
+
+    trackingButton:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
     -- Restore saved position
     if BuffHelperDB and BuffHelperDB.position then
         mainFrame:ClearAllPoints()
@@ -1247,8 +1453,14 @@ function BuffHelper:UpdateBuffPanel()
     if mainFrame.thresholdLabel then
         if isConfigMode then
             mainFrame.thresholdLabel:Show()
+            if mainFrame.thresholdTooltipFrame then
+                mainFrame.thresholdTooltipFrame:Show()
+            end
         else
             mainFrame.thresholdLabel:Hide()
+            if mainFrame.thresholdTooltipFrame then
+                mainFrame.thresholdTooltipFrame:Hide()
+            end
         end
     end
 
@@ -1389,7 +1601,72 @@ function BuffHelper:UpdateBuffPanel()
     -- Adjust frame height based on visible rows
     local visibleRows = rowIndex - 1
     local headerOffset = isConfigMode and 30 or 0  -- Extra space for headers + threshold inputs
-    local newHeight = 28 + headerOffset + (visibleRows * 22)
+    local baseHeight = 28 + headerOffset + (visibleRows * 22)
+
+    -- Handle tracking section
+    local trackingHeight = 0
+    if trackingSection then
+        if isConfigMode then
+            -- Config mode: show checkboxes for tracking abilities
+            local trackingSectionY = -headerOffset - 22 - (visibleRows * 22) - 8
+
+            trackingSection:ClearAllPoints()
+            trackingSection:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 8, trackingSectionY)
+
+            -- Show title and checkboxes
+            trackingSection.title:Show()
+
+            for trackIdx, trackDef in ipairs(TrackingProfiles) do
+                if trackingCheckboxes[trackIdx] then
+                    trackingCheckboxes[trackIdx]:SetChecked(self:GetProfessionTracking(trackDef.id))
+                    trackingCheckboxes[trackIdx]:Show()
+                    if trackingCheckboxes[trackIdx].label then
+                        trackingCheckboxes[trackIdx].label:Show()
+                    end
+                end
+            end
+
+            -- Hide operational mode button
+            trackingButton:Hide()
+
+            trackingSection:Show()
+            trackingHeight = 45
+        else
+            -- Operational mode: only show if tracking is missing
+            local hasMissing, missingTrackDef = self:HasMissingTracking()
+
+            if hasMissing and missingTrackDef then
+                local trackingSectionY = -22 - (visibleRows * 22) - 8
+
+                trackingSection:ClearAllPoints()
+                trackingSection:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 8, trackingSectionY)
+
+                -- Hide config mode elements
+                trackingSection.title:Hide()
+                for trackIdx = 1, table.getn(TrackingProfiles) do
+                    if trackingCheckboxes[trackIdx] then
+                        trackingCheckboxes[trackIdx]:Hide()
+                        if trackingCheckboxes[trackIdx].label then
+                            trackingCheckboxes[trackIdx].label:Hide()
+                        end
+                    end
+                end
+
+                -- Show button with missing tracking info
+                trackingButton.icon:SetTexture(missingTrackDef.texture)
+                trackingButton.text:SetText(missingTrackDef.displayName .. " OFF")
+                trackingButton.spellName = missingTrackDef.spellName
+                trackingButton:Show()
+
+                trackingSection:Show()
+                trackingHeight = 35
+            else
+                trackingSection:Hide()
+            end
+        end
+    end
+
+    local newHeight = baseHeight + trackingHeight
     mainFrame:SetHeight(math.max(50, newHeight))
 end
 
@@ -1405,6 +1682,7 @@ function BuffHelper:OnAddonLoaded()
             buffTracking = {},
             lowTimeThresholds = {},
             chatAlerts = {},
+            professionTracking = {},
         }
     end
 
@@ -1420,6 +1698,9 @@ function BuffHelper:OnAddonLoaded()
     end
     if not BuffHelperDB.chatAlerts then
         BuffHelperDB.chatAlerts = {}
+    end
+    if not BuffHelperDB.professionTracking then
+        BuffHelperDB.professionTracking = {}
     end
 
     -- Initialize addon components

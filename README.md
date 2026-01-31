@@ -25,6 +25,7 @@ WoW addon for **Vanilla 1.12** (Turtle WoW) that tracks class-specific buffs on 
 - Draggable panel; position is saved
 - **Two display modes** with configurable buff tracking per member
 - **Smart column hiding** in operational mode - only shows buffs that need action
+- **Profession tracking** for Find Herbs, Find Minerals, and Find Treasure
 - **Extensible profile system** for adding new classes
 
 ## Display Modes
@@ -45,6 +46,22 @@ WoW addon for **Vanilla 1.12** (Turtle WoW) that tracks class-specific buffs on 
 - Unchecked buffs won't trigger alerts and show as purple
 - Settings are saved per character name (persists across sessions)
 - Click the **"C"** button (top-left) to switch to Operational mode
+
+## Profession Tracking
+
+The panel includes a separate section at the bottom for tracking profession abilities:
+
+| Tracking | Profession |
+|----------|------------|
+| Find Herbs | Herbalism |
+| Find Minerals | Mining |
+| Find Treasure | Dwarf Racial |
+
+### How It Works
+- **Config Mode**: Checkboxes appear at the bottom to enable/disable tracking for each ability
+- **Operational Mode**: If an enabled tracking is inactive (e.g., after death), a red button appears showing "Herbs OFF", "Minerals OFF", or "Chests OFF"
+- **One-Click Reactivation**: Click the button to cast the tracking spell and reactivate it
+- Settings are global (not per-character) since professions follow the character
 
 ## Compatibility
 
