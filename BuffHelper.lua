@@ -228,6 +228,46 @@ local BuffProfiles = {
                 chatAlertDefault = false,
                 selfOnly = true,
             },
+            {
+                id = "windfuryweapon",
+                spellName = "Windfury Weapon",
+                texture = "Interface\\Icons\\Spell_Nature_Cyclone",
+                headerText = "WW",
+                lowTimeDefault = 60,
+                chatAlertDefault = false,
+                selfOnly = true,
+                weaponSlot = "mainhand",
+            },
+            {
+                id = "flametongueweapon",
+                spellName = "Flametongue Weapon",
+                texture = "Interface\\Icons\\Spell_Fire_FlameTounge",
+                headerText = "FW",
+                lowTimeDefault = 60,
+                chatAlertDefault = false,
+                selfOnly = true,
+                weaponSlot = "mainhand",
+            },
+            {
+                id = "rockbiterweapon",
+                spellName = "Rockbiter Weapon",
+                texture = "Interface\\Icons\\Spell_Nature_RockBiter",
+                headerText = "RW",
+                lowTimeDefault = 60,
+                chatAlertDefault = false,
+                selfOnly = true,
+                weaponSlot = "mainhand",
+            },
+            {
+                id = "frostbrandweapon",
+                spellName = "Frostbrand Weapon",
+                texture = "Interface\\Icons\\Spell_Frost_FrostBrand",
+                headerText = "FB",
+                lowTimeDefault = 60,
+                chatAlertDefault = false,
+                selfOnly = true,
+                weaponSlot = "mainhand",
+            },
         }
     },
     WARLOCK = {
@@ -241,6 +281,51 @@ local BuffProfiles = {
                 lowTimeDefault = 60,
                 chatAlertDefault = false,
                 selfOnly = true,
+            },
+        }
+    },
+    ROGUE = {
+        title = "Rogue Buffs",
+        buffs = {
+            {
+                id = "instantpoison",
+                spellName = "Instant Poison",
+                texture = "Interface\\Icons\\Ability_Poisons",
+                headerText = "IP",
+                lowTimeDefault = 60,
+                chatAlertDefault = false,
+                selfOnly = true,
+                weaponSlot = "mainhand",
+            },
+            {
+                id = "instantpoisonoh",
+                spellName = "Instant Poison",
+                texture = "Interface\\Icons\\Ability_Poisons",
+                headerText = "IO",
+                lowTimeDefault = 60,
+                chatAlertDefault = false,
+                selfOnly = true,
+                weaponSlot = "offhand",
+            },
+            {
+                id = "deadlypoison",
+                spellName = "Deadly Poison",
+                texture = "Interface\\Icons\\Ability_Rogue_DualWeild",
+                headerText = "DP",
+                lowTimeDefault = 60,
+                chatAlertDefault = false,
+                selfOnly = true,
+                weaponSlot = "mainhand",
+            },
+            {
+                id = "deadlypoisonoh",
+                spellName = "Deadly Poison",
+                texture = "Interface\\Icons\\Ability_Rogue_DualWeild",
+                headerText = "DO",
+                lowTimeDefault = 60,
+                chatAlertDefault = false,
+                selfOnly = true,
+                weaponSlot = "offhand",
             },
         }
     },
@@ -370,7 +455,35 @@ end
 -- Check if unit has a specific buff; returns hasBuff, timeLeft
 function BuffHelper:HasBuff(unit, buffDef)
     if not buffDef then return false, nil end
+
+    -- Weapon enchants: only detectable on player
+    if buffDef.weaponSlot then
+        if unit == "player" then
+            return self:HasWeaponEnchant(buffDef.weaponSlot)
+        end
+        return false, nil  -- Can't detect party weapon enchants
+    end
+
+    -- Regular aura buff
     return self:UnitHasBuffTexture(unit, buffDef.texture)
+end
+
+-- Check if player has a weapon enchant on specified slot
+-- Returns: hasEnchant, timeLeftSeconds
+function BuffHelper:HasWeaponEnchant(slot)
+    local hasMainHandEnchant, mainHandExpiration, mainHandCharges,
+          hasOffHandEnchant, offHandExpiration, offHandCharges = GetWeaponEnchantInfo()
+
+    if slot == "mainhand" then
+        if hasMainHandEnchant then
+            return true, mainHandExpiration / 1000  -- Convert ms to seconds
+        end
+    elseif slot == "offhand" then
+        if hasOffHandEnchant then
+            return true, offHandExpiration / 1000
+        end
+    end
+    return false, nil
 end
 
 -- Get class color for unit
@@ -519,6 +632,76 @@ function BuffHelper:ShouldShowMember(unit, name)
     return false
 end
 
+-- Get buffs that need to be visible in operational mode
+-- Returns a table of buffId => true for any buff that at least one visible member needs
+function BuffHelper:GetVisibleBuffsForOperationalMode()
+    local visibleBuffs = {}
+    local profile = self:GetActiveProfile()
+    if not profile then return visibleBuffs end
+
+    -- Check player
+    local playerName = UnitName("player")
+    if playerName and self:ShouldShowMember("player", playerName) then
+        local tracking = self:GetBuffTracking(playerName)
+        for _, buffDef in ipairs(profile.buffs) do
+            if tracking[buffDef.id] then
+                local hasBuff, timeLeft = self:HasBuff("player", buffDef)
+                if not hasBuff then
+                    visibleBuffs[buffDef.id] = true
+                elseif timeLeft then
+                    local threshold = self:GetLowTimeThreshold(buffDef.id)
+                    if timeLeft < threshold then
+                        visibleBuffs[buffDef.id] = true
+                    end
+                end
+            end
+        end
+    end
+
+    -- Check party members
+    local numPartyMembers = GetNumPartyMembers()
+    if numPartyMembers and numPartyMembers > 0 then
+        for i = 1, numPartyMembers do
+            local unit = "party" .. i
+            local name = UnitName(unit)
+            if name and UnitExists(unit) and self:ShouldShowMember(unit, name) then
+                local tracking = self:GetBuffTracking(name)
+                for _, buffDef in ipairs(profile.buffs) do
+                    if tracking[buffDef.id] then
+                        local hasBuff, timeLeft = self:HasBuff(unit, buffDef)
+                        if not hasBuff then
+                            visibleBuffs[buffDef.id] = true
+                        elseif timeLeft then
+                            local threshold = self:GetLowTimeThreshold(buffDef.id)
+                            if timeLeft < threshold then
+                                visibleBuffs[buffDef.id] = true
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return visibleBuffs
+end
+
+-- Convert visible buffs table to ordered list of profile buff indexes
+-- Preserves original order from profile.buffs
+function BuffHelper:GetVisibleBuffIndexes(visibleBuffs)
+    local indexes = {}
+    local profile = self:GetActiveProfile()
+    if not profile then return indexes end
+
+    for buffIdx, buffDef in ipairs(profile.buffs) do
+        if visibleBuffs[buffDef.id] then
+            table.insert(indexes, buffIdx)
+        end
+    end
+
+    return indexes
+end
+
 -- Toggle between config and operational modes
 function BuffHelper:ToggleMode()
     if BuffHelperDB.mode == "config" then
@@ -623,7 +806,8 @@ function BuffHelper:CreateBuffButton(parent, name, xPos, yPos, spellName, iconTe
         GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
         if this.hasBuff then
             if this.lowTime then
-                GameTooltip:SetText(this.spellName .. " - Less than 1 min left!", COLOR_YELLOW[1], COLOR_YELLOW[2], COLOR_YELLOW[3])
+                local threshold = BuffHelper:GetLowTimeThreshold(this.buffId)
+                GameTooltip:SetText(this.spellName .. " - Less than " .. threshold .. "s left!", COLOR_YELLOW[1], COLOR_YELLOW[2], COLOR_YELLOW[3])
             else
                 GameTooltip:SetText(this.spellName .. " - Active", COLOR_GREEN[1], COLOR_GREEN[2], COLOR_GREEN[3])
             end
@@ -1047,6 +1231,18 @@ function BuffHelper:UpdateBuffPanel()
     local isConfigMode = (BuffHelperDB.mode == "config")
     local buffCount = table.getn(profile.buffs)
 
+    -- Calculate visible buffs for operational mode (buffs that need action)
+    local visibleBuffs, visibleBuffIndexes = {}, {}
+    if not isConfigMode then
+        visibleBuffs = self:GetVisibleBuffsForOperationalMode()
+        visibleBuffIndexes = self:GetVisibleBuffIndexes(visibleBuffs)
+    end
+    local visibleBuffCount = isConfigMode and buffCount or table.getn(visibleBuffIndexes)
+
+    -- Adjust panel width dynamically based on visible columns
+    local colWidth = 25
+    mainFrame:SetWidth(95 + (visibleBuffCount * colWidth))
+
     -- Show/hide column headers, threshold label and inputs based on mode
     if mainFrame.thresholdLabel then
         if isConfigMode then
@@ -1117,20 +1313,6 @@ function BuffHelper:UpdateBuffPanel()
         row.name:ClearAllPoints()
         row.name:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col1X, yPos - 5)
 
-        -- Reposition buff buttons and checkboxes
-        for buffIdx, buffDef in ipairs(profile.buffs) do
-            local colX = buffStartX + (buffIdx - 1) * colWidth
-
-            if row.buffButtons[buffIdx] then
-                row.buffButtons[buffIdx]:ClearAllPoints()
-                row.buffButtons[buffIdx]:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", colX, yPos)
-            end
-            if row.buffCheckboxes[buffIdx] then
-                row.buffCheckboxes[buffIdx]:ClearAllPoints()
-                row.buffCheckboxes[buffIdx]:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", colX, yPos)
-            end
-        end
-
         local classColor = self:GetClassColor(unit)
         row.name:SetText(name)
         row.name:SetTextColor(classColor[1], classColor[2], classColor[3], classColor[4])
@@ -1140,18 +1322,28 @@ function BuffHelper:UpdateBuffPanel()
         local tracking = self:GetBuffTracking(name)
 
         if isConfigMode then
-            -- Config mode: show checkboxes, hide buttons
+            -- Config mode: show checkboxes for all buffs, hide buttons
             for buffIdx, buffDef in ipairs(profile.buffs) do
+                local colX = buffStartX + (buffIdx - 1) * colWidth
+
                 if row.buffCheckboxes[buffIdx] then
+                    row.buffCheckboxes[buffIdx]:ClearAllPoints()
+                    row.buffCheckboxes[buffIdx]:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", colX, yPos)
                     row.buffCheckboxes[buffIdx]:SetChecked(tracking[buffDef.id])
                     row.buffCheckboxes[buffIdx]:Show()
                 end
             end
         else
-            -- Operational mode: show buttons, hide checkboxes
-            for buffIdx, buffDef in ipairs(profile.buffs) do
+            -- Operational mode: show only visible buff columns (those needing action)
+            for displayCol, buffIdx in ipairs(visibleBuffIndexes) do
+                local buffDef = profile.buffs[buffIdx]
                 local btn = row.buffButtons[buffIdx]
                 if btn then
+                    -- Position using display column index (0-based for X calculation)
+                    local colX = buffStartX + (displayCol - 1) * colWidth
+                    btn:ClearAllPoints()
+                    btn:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", colX, yPos)
+
                     btn.unit = unit
 
                     local hasBuff, buffTime = self:HasBuff(unit, buffDef)
