@@ -1,19 +1,39 @@
--- DruidBuffHelper for WoW Vanilla 1.12 (Turtle WoW)
--- Druid Buff Tracker for Party Members
+-- BuffHelper for WoW Vanilla 1.12 (Turtle WoW)
+-- Buff Tracker for Party Members
 
 -- Saved variables (persisted between sessions, initialized in OnAddonLoaded)
 
 -- Addon namespace
-DruidBuffHelper = {}
+BuffHelper = {}
 local addonLoaded = false
 
--- Buff textures to track (1.12 returns texture, not name)
-local BUFF_MOTW_TEXTURE = "Interface\\Icons\\Spell_Nature_Regeneration"
-local BUFF_THORNS_TEXTURE = "Interface\\Icons\\Spell_Nature_Thorns"
+-- Buff Profiles - defines buffs for each class
+-- To add a new class, simply add a new entry to this table
+local BuffProfiles = {
+    DRUID = {
+        title = "Druid Buffs",
+        buffs = {
+            {
+                id = "motw",
+                spellName = "Mark of the Wild",
+                texture = "Interface\\Icons\\Spell_Nature_Regeneration",
+                headerText = "MW",
+            },
+            {
+                id = "thorns",
+                spellName = "Thorns",
+                texture = "Interface\\Icons\\Spell_Nature_Thorns",
+                headerText = "Th",
+            },
+        }
+    },
+    -- Add other classes here, e.g.:
+    -- PRIEST = { title = "Priest Buffs", buffs = { ... } },
+    -- MAGE = { title = "Mage Buffs", buffs = { ... } },
+}
 
--- Spell names for casting
-local SPELL_MARK_OF_THE_WILD = "Mark of the Wild"
-local SPELL_THORNS = "Thorns"
+-- Active profile (cached after first detection)
+local activeProfile = nil
 
 -- Low buff threshold (seconds)
 local LOW_BUFF_THRESHOLD = 60
@@ -26,6 +46,7 @@ local COLOR_HEADER = {1, 0.82, 0, 1}
 local COLOR_DARK_GREEN = {0, 0.4, 0, 1}
 local COLOR_DARK_RED = {0.4, 0, 0, 1}
 local COLOR_YELLOW = {1, 1, 0, 1}
+local COLOR_PURPLE = {0.6, 0.2, 0.8, 1}
 
 -- UI elements
 local mainFrame = nil
@@ -38,6 +59,8 @@ local buffState = {}
 
 -- Create main frame for event handling
 local eventFrame = CreateFrame("Frame")
+local updateElapsed = 0
+local UPDATE_INTERVAL = 1  -- Refresh every 1 second to catch low time buffs
 
 -- Register events
 eventFrame:RegisterEvent("ADDON_LOADED")
@@ -46,59 +69,100 @@ eventFrame:RegisterEvent("PARTY_MEMBERS_CHANGED")
 eventFrame:RegisterEvent("UNIT_AURA")
 eventFrame:RegisterEvent("SPELLCAST_STOP")
 
+-- Periodic update to catch buff time changes
+eventFrame:SetScript("OnUpdate", function()
+    updateElapsed = updateElapsed + arg1
+    if updateElapsed >= UPDATE_INTERVAL then
+        updateElapsed = 0
+        if addonLoaded then
+            BuffHelper:UpdateBuffPanel()
+        end
+    end
+end)
+
 -- Event handler (1.12 style - no self, uses arg1, arg2, etc.)
 eventFrame:SetScript("OnEvent", function()
     if event == "ADDON_LOADED" then
-        if arg1 == "DruidBuffHelper" then
-            DruidBuffHelper:OnAddonLoaded()
+        if arg1 == "BuffHelper" then
+            BuffHelper:OnAddonLoaded()
         end
     elseif event == "PLAYER_ENTERING_WORLD" then
-        DruidBuffHelper:OnPlayerLogin()
+        BuffHelper:OnPlayerLogin()
     elseif event == "PARTY_MEMBERS_CHANGED" then
-        DruidBuffHelper:CleanupBuffState()
-        DruidBuffHelper:UpdateBuffPanel()
+        BuffHelper:CleanupBuffState()
+        BuffHelper:UpdateBuffPanel()
     elseif event == "UNIT_AURA" then
         if arg1 == "player" or arg1 == "party1" or arg1 == "party2" or arg1 == "party3" or arg1 == "party4" then
-            DruidBuffHelper:UpdateBuffPanel()
+            BuffHelper:UpdateBuffPanel()
         end
     elseif event == "SPELLCAST_STOP" then
         -- Update panel after casting
-        DruidBuffHelper:UpdateBuffPanel()
+        BuffHelper:UpdateBuffPanel()
     end
 end)
 
 -- Check if unit has a buff by texture; returns hasBuff, timeLeftSeconds (nil if unknown)
-function DruidBuffHelper:UnitHasBuffTexture(unit, texture)
+function BuffHelper:UnitHasBuffTexture(unit, texture)
+    -- For player, use GetPlayerBuff API which supports time left
+    if unit == "player" then
+        local i = 0
+        while true do
+            local buffIndex = GetPlayerBuff(i, "HELPFUL")
+            if buffIndex < 0 then break end
+            local buffTexture = GetPlayerBuffTexture(buffIndex)
+            if buffTexture == texture then
+                local timeLeft = GetPlayerBuffTimeLeft(buffIndex)
+                if timeLeft and timeLeft > 0 then
+                    return true, timeLeft
+                end
+                return true, nil
+            end
+            i = i + 1
+        end
+        return false, nil
+    end
+
+    -- For party members, use UnitBuff (no time available in vanilla)
     local i = 1
     while true do
-        -- Turtle WoW UnitBuff returns: texture, stacks, type, duration, expirationTime
-        local tex, stacks, buffType, duration, expirationTime = UnitBuff(unit, i)
+        local tex = UnitBuff(unit, i)
         if not tex then break end
         if tex == texture then
-            local timeLeft = nil
-            if expirationTime and expirationTime > 0 then
-                timeLeft = expirationTime - GetTime()
-                if timeLeft < 0 then timeLeft = 0 end
-            end
-            return true, timeLeft
+            return true, nil  -- No time info available for party members
         end
         i = i + 1
     end
     return false, nil
 end
 
--- Check if unit has Mark of the Wild (or Gift of the Wild - same icon); returns hasBuff, timeLeft
-function DruidBuffHelper:HasMarkOfTheWild(unit)
-    return self:UnitHasBuffTexture(unit, BUFF_MOTW_TEXTURE)
+-- Get the active buff profile for the player's class
+function BuffHelper:GetActiveProfile()
+    if activeProfile then return activeProfile end
+    local _, playerClass = UnitClass("player")
+    activeProfile = BuffProfiles[playerClass]
+    return activeProfile
 end
 
--- Check if unit has Thorns; returns hasBuff, timeLeft
-function DruidBuffHelper:HasThorns(unit)
-    return self:UnitHasBuffTexture(unit, BUFF_THORNS_TEXTURE)
+-- Get buff definition by ID from active profile
+function BuffHelper:GetBuffDef(buffId)
+    local profile = self:GetActiveProfile()
+    if not profile then return nil end
+    for _, buffDef in ipairs(profile.buffs) do
+        if buffDef.id == buffId then
+            return buffDef
+        end
+    end
+    return nil
+end
+
+-- Check if unit has a specific buff; returns hasBuff, timeLeft
+function BuffHelper:HasBuff(unit, buffDef)
+    if not buffDef then return false, nil end
+    return self:UnitHasBuffTexture(unit, buffDef.texture)
 end
 
 -- Get class color for unit
-function DruidBuffHelper:GetClassColor(unit)
+function BuffHelper:GetClassColor(unit)
     local _, class = UnitClass(unit)
     if class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class] then
         local color = RAID_CLASS_COLORS[class]
@@ -107,40 +171,52 @@ function DruidBuffHelper:GetClassColor(unit)
     return COLOR_WHITE
 end
 
--- Get buff tracking settings for a character (defaults: both buffs enabled)
-function DruidBuffHelper:GetBuffTracking(characterName)
-    if not characterName then return { motw = true, thorns = true } end
+-- Build default tracking table from active profile (all buffs enabled)
+function BuffHelper:GetDefaultTracking()
+    local defaults = {}
+    local profile = self:GetActiveProfile()
+    if profile then
+        for _, buffDef in ipairs(profile.buffs) do
+            defaults[buffDef.id] = true
+        end
+    end
+    return defaults
+end
 
-    if not DruidBuffHelperDB.buffTracking then
-        DruidBuffHelperDB.buffTracking = {}
+-- Get buff tracking settings for a character (defaults: all buffs from profile enabled)
+function BuffHelper:GetBuffTracking(characterName)
+    if not characterName then return self:GetDefaultTracking() end
+
+    if not BuffHelperDB.buffTracking then
+        BuffHelperDB.buffTracking = {}
     end
 
-    if not DruidBuffHelperDB.buffTracking[characterName] then
-        DruidBuffHelperDB.buffTracking[characterName] = { motw = true, thorns = true }
+    if not BuffHelperDB.buffTracking[characterName] then
+        BuffHelperDB.buffTracking[characterName] = self:GetDefaultTracking()
     end
 
-    return DruidBuffHelperDB.buffTracking[characterName]
+    return BuffHelperDB.buffTracking[characterName]
 end
 
 -- Set buff tracking for a specific character and buff type
-function DruidBuffHelper:SetBuffTracking(characterName, buffType, enabled)
+function BuffHelper:SetBuffTracking(characterName, buffType, enabled)
     if not characterName then return end
 
-    if not DruidBuffHelperDB.buffTracking then
-        DruidBuffHelperDB.buffTracking = {}
+    if not BuffHelperDB.buffTracking then
+        BuffHelperDB.buffTracking = {}
     end
 
-    if not DruidBuffHelperDB.buffTracking[characterName] then
-        DruidBuffHelperDB.buffTracking[characterName] = { motw = true, thorns = true }
+    if not BuffHelperDB.buffTracking[characterName] then
+        BuffHelperDB.buffTracking[characterName] = self:GetDefaultTracking()
     end
 
-    DruidBuffHelperDB.buffTracking[characterName][buffType] = enabled
+    BuffHelperDB.buffTracking[characterName][buffType] = enabled
 end
 
 -- Check if member should be shown in operational mode
-function DruidBuffHelper:ShouldShowMember(unit, name)
+function BuffHelper:ShouldShowMember(unit, name)
     -- In config mode, always show all members
-    if DruidBuffHelperDB.mode == "config" then
+    if BuffHelperDB.mode == "config" then
         return true
     end
 
@@ -159,39 +235,38 @@ function DruidBuffHelper:ShouldShowMember(unit, name)
 
     -- In operational mode, show only if member needs a tracked buff
     local tracking = self:GetBuffTracking(name)
+    local profile = self:GetActiveProfile()
 
-    if tracking.motw then
-        local hasBuff, timeLeft = self:HasMarkOfTheWild(unit)
-        if not hasBuff then return true end
-        if timeLeft and timeLeft < LOW_BUFF_THRESHOLD then return true end
-    end
-
-    if tracking.thorns then
-        local hasBuff, timeLeft = self:HasThorns(unit)
-        if not hasBuff then return true end
-        if timeLeft and timeLeft < LOW_BUFF_THRESHOLD then return true end
+    if profile then
+        for _, buffDef in ipairs(profile.buffs) do
+            if tracking[buffDef.id] then
+                local hasBuff, timeLeft = self:HasBuff(unit, buffDef)
+                if not hasBuff then return true end
+                if timeLeft and timeLeft < LOW_BUFF_THRESHOLD then return true end
+            end
+        end
     end
 
     return false
 end
 
 -- Toggle between config and operational modes
-function DruidBuffHelper:ToggleMode()
-    if DruidBuffHelperDB.mode == "config" then
-        DruidBuffHelperDB.mode = "operational"
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r: Operational mode - showing members needing buffs")
+function BuffHelper:ToggleMode()
+    if BuffHelperDB.mode == "config" then
+        BuffHelperDB.mode = "operational"
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper|r: Operational mode - showing members needing buffs")
     else
-        DruidBuffHelperDB.mode = "config"
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r: Config mode - configure buff tracking")
+        BuffHelperDB.mode = "config"
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper|r: Config mode - configure buff tracking")
     end
     self:UpdateModeButton()
     self:UpdateBuffPanel()
 end
 
 -- Update mode button appearance
-function DruidBuffHelper:UpdateModeButton()
+function BuffHelper:UpdateModeButton()
     if not modeButton then return end
-    if DruidBuffHelperDB.mode == "config" then
+    if BuffHelperDB.mode == "config" then
         modeButton.text:SetText("C")
         modeButton.text:SetTextColor(0, 1, 0, 1)  -- Green for config
     else
@@ -201,15 +276,15 @@ function DruidBuffHelper:UpdateModeButton()
 end
 
 -- Cast a buff on a unit
-function DruidBuffHelper:CastBuffOnUnit(unit, spellName)
+function BuffHelper:CastBuffOnUnit(unit, spellName)
     if not unit or not spellName then return end
     if not UnitExists(unit) then return end
     if UnitIsDeadOrGhost(unit) then
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r: Target is dead!")
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper|r: Target is dead!")
         return
     end
     if not UnitIsConnected(unit) then
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r: Target is offline!")
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper|r: Target is offline!")
         return
     end
     
@@ -220,7 +295,7 @@ function DruidBuffHelper:CastBuffOnUnit(unit, spellName)
 end
 
 -- Create a buff button with spell icon
-function DruidBuffHelper:CreateBuffButton(parent, name, xPos, yPos, spellName, iconTexture)
+function BuffHelper:CreateBuffButton(parent, name, xPos, yPos, spellName, iconTexture)
     local size = 20
     local btn = CreateFrame("Button", name, parent)
     btn:SetWidth(size)
@@ -261,7 +336,7 @@ function DruidBuffHelper:CreateBuffButton(parent, name, xPos, yPos, spellName, i
     -- Click handler
     btn:SetScript("OnClick", function()
         if this.unit and this.spellName then
-            DruidBuffHelper:CastBuffOnUnit(this.unit, this.spellName)
+            BuffHelper:CastBuffOnUnit(this.unit, this.spellName)
         end
     end)
     
@@ -275,7 +350,11 @@ function DruidBuffHelper:CreateBuffButton(parent, name, xPos, yPos, spellName, i
                 GameTooltip:SetText(this.spellName .. " - Active", COLOR_GREEN[1], COLOR_GREEN[2], COLOR_GREEN[3])
             end
         else
-            GameTooltip:SetText("Click to cast " .. this.spellName, COLOR_WHITE[1], COLOR_WHITE[2], COLOR_WHITE[3])
+            if this.tracked then
+                GameTooltip:SetText("Click to cast " .. this.spellName, COLOR_WHITE[1], COLOR_WHITE[2], COLOR_WHITE[3])
+            else
+                GameTooltip:SetText(this.spellName .. " - Not tracked", COLOR_PURPLE[1], COLOR_PURPLE[2], COLOR_PURPLE[3])
+            end
         end
         GameTooltip:Show()
     end)
@@ -287,10 +366,11 @@ function DruidBuffHelper:CreateBuffButton(parent, name, xPos, yPos, spellName, i
     return btn
 end
 
--- Update button appearance based on buff status (hasBuff, lowTime = < 1 min left)
-function DruidBuffHelper:UpdateBuffButton(btn, hasBuff, lowTime)
+-- Update button appearance based on buff status (hasBuff, lowTime = < 1 min left, tracked = buff is tracked for this member)
+function BuffHelper:UpdateBuffButton(btn, hasBuff, lowTime, tracked)
     btn.hasBuff = hasBuff
     btn.lowTime = lowTime
+    btn.tracked = tracked
     if hasBuff then
         if lowTime then
             btn.icon:SetVertexColor(COLOR_YELLOW[1], COLOR_YELLOW[2], COLOR_YELLOW[3], 1)
@@ -302,28 +382,47 @@ function DruidBuffHelper:UpdateBuffButton(btn, hasBuff, lowTime)
             btn.border:SetTexture(0, 0.6, 0, 1) -- Green border
         end
     else
-        btn.icon:SetVertexColor(0.4, 0.4, 0.4, 1)
-        btn.overlay:Show()
-        btn.border:SetTexture(0.6, 0, 0, 1) -- Red border
+        if tracked then
+            -- Missing and tracked = red (needs buff)
+            btn.icon:SetVertexColor(0.4, 0.4, 0.4, 1)
+            btn.overlay:Show()
+            btn.border:SetTexture(0.6, 0, 0, 1) -- Red border
+        else
+            -- Missing but not tracked = purple (doesn't need buff)
+            btn.icon:SetVertexColor(0.5, 0.3, 0.6, 1)
+            btn.overlay:Hide()
+            btn.border:SetTexture(COLOR_PURPLE[1], COLOR_PURPLE[2], COLOR_PURPLE[3], 1) -- Purple border
+        end
     end
 end
 
 -- Create the buff tracking panel
-function DruidBuffHelper:CreateBuffPanel()
+function BuffHelper:CreateBuffPanel()
     if mainFrame then return end
-    
+
+    local profile = self:GetActiveProfile()
+    if not profile then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000BuffHelper|r: No buff profile found for your class!")
+        return
+    end
+
+    local buffCount = table.getn(profile.buffs)
+    local col1X = 8
+    local colWidth = 25
+    local baseWidth = 95 + (buffCount * colWidth)
+
     -- Main frame (1.12 style - no BackdropTemplate)
-    mainFrame = CreateFrame("Frame", "DruidBuffHelperPanel", UIParent)
+    mainFrame = CreateFrame("Frame", "BuffHelperPanel", UIParent)
     mainFrame:SetFrameStrata("MEDIUM")
     mainFrame:SetFrameLevel(10)
-    mainFrame:SetWidth(150)
+    mainFrame:SetWidth(baseWidth)
     mainFrame:SetHeight(140)
     mainFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
     mainFrame:SetMovable(true)
     mainFrame:EnableMouse(true)
     mainFrame:RegisterForDrag("LeftButton")
     mainFrame:SetClampedToScreen(true)
-    
+
     -- Backdrop (1.12 style)
     mainFrame:SetBackdrop({
         bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
@@ -334,7 +433,7 @@ function DruidBuffHelper:CreateBuffPanel()
         insets = { left = 2, right = 2, top = 2, bottom = 2 }
     })
     mainFrame:SetBackdropColor(0, 0, 0, 0.9)
-    
+
     -- Drag functionality (1.12 style)
     mainFrame:SetScript("OnDragStart", function()
         this:StartMoving()
@@ -343,15 +442,15 @@ function DruidBuffHelper:CreateBuffPanel()
         this:StopMovingOrSizing()
         -- Save position
         local point, _, relativePoint, xOfs, yOfs = this:GetPoint()
-        DruidBuffHelperDB.position = { point = point, relativePoint = relativePoint, x = xOfs, y = yOfs }
+        BuffHelperDB.position = { point = point, relativePoint = relativePoint, x = xOfs, y = yOfs }
     end)
-    
-    -- Title
+
+    -- Title (from profile)
     local title = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     title:SetPoint("TOP", mainFrame, "TOP", 0, -8)
-    title:SetText("Druid Buffs")
+    title:SetText(profile.title)
     title:SetTextColor(COLOR_HEADER[1], COLOR_HEADER[2], COLOR_HEADER[3], COLOR_HEADER[4])
-    
+
     -- Close button
     local closeBtn = CreateFrame("Button", nil, mainFrame, "UIPanelCloseButton")
     closeBtn:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", 0, 0)
@@ -359,11 +458,11 @@ function DruidBuffHelper:CreateBuffPanel()
     closeBtn:SetHeight(20)
     closeBtn:SetScript("OnClick", function()
         mainFrame:Hide()
-        DruidBuffHelperDB.enabled = false
+        BuffHelperDB.enabled = false
     end)
 
     -- Mode switch button
-    modeButton = CreateFrame("Button", "DruidBuffHelperModeBtn", mainFrame)
+    modeButton = CreateFrame("Button", "BuffHelperModeBtn", mainFrame)
     modeButton:SetWidth(16)
     modeButton:SetHeight(14)
     modeButton:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 6, -7)
@@ -376,12 +475,12 @@ function DruidBuffHelper:CreateBuffPanel()
     modeButton:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
 
     modeButton:SetScript("OnClick", function()
-        DruidBuffHelper:ToggleMode()
+        BuffHelper:ToggleMode()
     end)
 
     modeButton:SetScript("OnEnter", function()
         GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
-        if DruidBuffHelperDB.mode == "config" then
+        if BuffHelperDB.mode == "config" then
             GameTooltip:SetText("Config Mode: Configure which buffs to track.\nClick to switch to Operational Mode.", 1, 1, 1)
         else
             GameTooltip:SetText("Operational Mode: Shows members needing buffs.\nClick to switch to Config Mode.", 1, 1, 1)
@@ -393,23 +492,17 @@ function DruidBuffHelper:CreateBuffPanel()
         GameTooltip:Hide()
     end)
 
-    -- Column positions
-    local col1X = 8
-    local col2X = 95
-    local col3X = 120
-
-    -- Column headers (shown in config mode only)
-    columnHeaders.motw = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    columnHeaders.motw:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col2X, -22)
-    columnHeaders.motw:SetText("MW")
-    columnHeaders.motw:SetTextColor(0.7, 0.7, 0.7, 1)
-    columnHeaders.motw:Hide()
-
-    columnHeaders.thorns = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    columnHeaders.thorns:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col3X, -22)
-    columnHeaders.thorns:SetText("Th")
-    columnHeaders.thorns:SetTextColor(0.7, 0.7, 0.7, 1)
-    columnHeaders.thorns:Hide()
+    -- Create column headers dynamically from profile
+    local buffStartX = 95
+    for buffIdx, buffDef in ipairs(profile.buffs) do
+        local colX = buffStartX + (buffIdx - 1) * colWidth
+        local header = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        header:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", colX, -22)
+        header:SetText(buffDef.headerText)
+        header:SetTextColor(0.7, 0.7, 0.7, 1)
+        header:Hide()
+        columnHeaders[buffIdx] = header
+    end
 
     -- Create rows for player + 4 party members
     local rowHeight = 22
@@ -426,92 +519,75 @@ function DruidBuffHelper:CreateBuffPanel()
         row.name:SetJustifyH("LEFT")
         row.name:SetText("")
 
-        -- Mark of the Wild button
-        row.motwBtn = self:CreateBuffButton(mainFrame, "DruidBuffHelperMotwBtn"..i, col2X, yPos, SPELL_MARK_OF_THE_WILD, BUFF_MOTW_TEXTURE)
-        row.motwBtn:Hide()
+        -- Create buff buttons and checkboxes dynamically from profile
+        row.buffButtons = {}
+        row.buffCheckboxes = {}
 
-        -- Thorns button
-        row.thornsBtn = self:CreateBuffButton(mainFrame, "DruidBuffHelperThornsBtn"..i, col3X, yPos, SPELL_THORNS, BUFF_THORNS_TEXTURE)
-        row.thornsBtn:Hide()
+        for buffIdx, buffDef in ipairs(profile.buffs) do
+            local colX = buffStartX + (buffIdx - 1) * colWidth
 
-        -- Mark of the Wild checkbox (for config mode)
-        row.motwCheckbox = CreateFrame("CheckButton", "DruidBuffHelperMotwCb"..i, mainFrame, "UICheckButtonTemplate")
-        row.motwCheckbox:SetWidth(20)
-        row.motwCheckbox:SetHeight(20)
-        row.motwCheckbox:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col2X, yPos)
-        row.motwCheckbox:SetChecked(true)
-        row.motwCheckbox:Hide()
-        row.motwCheckbox.rowIndex = i
+            -- Buff button
+            local btn = self:CreateBuffButton(mainFrame, "BuffHelperBtn"..buffDef.id..i, colX, yPos, buffDef.spellName, buffDef.texture)
+            btn:Hide()
+            btn.buffId = buffDef.id
+            row.buffButtons[buffIdx] = btn
 
-        row.motwCheckbox:SetScript("OnClick", function()
-            local rowIdx = this.rowIndex
-            local charName = memberRows[rowIdx].characterName
-            if charName then
-                DruidBuffHelper:SetBuffTracking(charName, "motw", this:GetChecked())
-            end
-        end)
+            -- Checkbox for config mode
+            local cb = CreateFrame("CheckButton", "BuffHelperCb"..buffDef.id..i, mainFrame, "UICheckButtonTemplate")
+            cb:SetWidth(20)
+            cb:SetHeight(20)
+            cb:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", colX, yPos)
+            cb:SetChecked(true)
+            cb:Hide()
+            cb.rowIndex = i
+            cb.buffId = buffDef.id
+            cb.spellName = buffDef.spellName  -- Store for tooltip
 
-        row.motwCheckbox:SetScript("OnEnter", function()
-            GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
-            GameTooltip:SetText("Track Mark of the Wild", 1, 1, 1)
-            GameTooltip:Show()
-        end)
+            cb:SetScript("OnClick", function()
+                local rowIdx = this.rowIndex
+                local charName = memberRows[rowIdx].characterName
+                if charName then
+                    BuffHelper:SetBuffTracking(charName, this.buffId, this:GetChecked())
+                end
+            end)
 
-        row.motwCheckbox:SetScript("OnLeave", function()
-            GameTooltip:Hide()
-        end)
+            cb:SetScript("OnEnter", function()
+                GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+                GameTooltip:SetText("Track " .. this.spellName, 1, 1, 1)
+                GameTooltip:Show()
+            end)
 
-        -- Thorns checkbox (for config mode)
-        row.thornsCheckbox = CreateFrame("CheckButton", "DruidBuffHelperThornsCb"..i, mainFrame, "UICheckButtonTemplate")
-        row.thornsCheckbox:SetWidth(20)
-        row.thornsCheckbox:SetHeight(20)
-        row.thornsCheckbox:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col3X, yPos)
-        row.thornsCheckbox:SetChecked(true)
-        row.thornsCheckbox:Hide()
-        row.thornsCheckbox.rowIndex = i
+            cb:SetScript("OnLeave", function()
+                GameTooltip:Hide()
+            end)
 
-        row.thornsCheckbox:SetScript("OnClick", function()
-            local rowIdx = this.rowIndex
-            local charName = memberRows[rowIdx].characterName
-            if charName then
-                DruidBuffHelper:SetBuffTracking(charName, "thorns", this:GetChecked())
-            end
-        end)
-
-        row.thornsCheckbox:SetScript("OnEnter", function()
-            GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
-            GameTooltip:SetText("Track Thorns", 1, 1, 1)
-            GameTooltip:Show()
-        end)
-
-        row.thornsCheckbox:SetScript("OnLeave", function()
-            GameTooltip:Hide()
-        end)
+            row.buffCheckboxes[buffIdx] = cb
+        end
 
         row.unit = nil
         row.characterName = nil
         row.visible = false
         memberRows[i] = row
     end
-    
+
     -- Restore saved position
-    if DruidBuffHelperDB and DruidBuffHelperDB.position then
+    if BuffHelperDB and BuffHelperDB.position then
         mainFrame:ClearAllPoints()
         mainFrame:SetPoint(
-            DruidBuffHelperDB.position.point,
+            BuffHelperDB.position.point,
             UIParent,
-            DruidBuffHelperDB.position.relativePoint,
-            DruidBuffHelperDB.position.x,
-            DruidBuffHelperDB.position.y
+            BuffHelperDB.position.relativePoint,
+            BuffHelperDB.position.x,
+            BuffHelperDB.position.y
         )
     end
-    
+
     -- Always show initially (OnAddonLoaded will handle proper visibility)
     mainFrame:Show()
 end
 
 -- Clean up buff state for members who left the party
-function DruidBuffHelper:CleanupBuffState()
+function BuffHelper:CleanupBuffState()
     local currentMembers = {}
     
     -- Get current party member names
@@ -543,75 +619,82 @@ function DruidBuffHelper:CleanupBuffState()
 end
 
 -- Check buff and alert if it was lost; also alert if < 1 min left
-function DruidBuffHelper:CheckBuffAndAlert(unit, name, buffType, hasBuff, timeLeft)
+function BuffHelper:CheckBuffAndAlert(unit, name, buffType, hasBuff, timeLeft)
     if not name then return hasBuff end
-    
+
+    -- Get spell name from profile
+    local buffDef = self:GetBuffDef(buffType)
+    local spellName = buffDef and buffDef.spellName or buffType
+
     -- Initialize state for this unit if needed
     if not buffState[name] then
         buffState[name] = {}
     end
-    
+
     local prevState = buffState[name][buffType]
     local lowTime = timeLeft and timeLeft < LOW_BUFF_THRESHOLD
     local lowKey = buffType .. "_lowAlert"
     local prevLowAlert = buffState[name][lowKey]
-    
+
     -- Alert if buff was lost (had it before, doesn't have it now)
     if prevState and not hasBuff then
-        local spellName
-        if buffType == "motw" then
-            spellName = SPELL_MARK_OF_THE_WILD
-        else
-            spellName = SPELL_THORNS
-        end
         local numParty = GetNumPartyMembers()
         if numParty and numParty > 0 then
             SendChatMessage(name .. " needs " .. spellName .. "!", "PARTY")
         else
-            DEFAULT_CHAT_FRAME:AddMessage("|cffff6600[DruidBuffHelper]|r |cffff0000" .. name .. "|r needs |cff00ff00" .. spellName .. "|r!")
+            DEFAULT_CHAT_FRAME:AddMessage("|cffff6600[BuffHelper]|r |cffff0000" .. name .. "|r needs |cff00ff00" .. spellName .. "|r!")
         end
     end
-    
+
     -- Alert if less than 1 min left (once per drop below threshold)
     if hasBuff and lowTime and not prevLowAlert then
-        local spellName = buffType == "motw" and SPELL_MARK_OF_THE_WILD or SPELL_THORNS
         local sec = math.floor(timeLeft)
-        DEFAULT_CHAT_FRAME:AddMessage("|cffff6600[DruidBuffHelper]|r |cffffff00" .. name .. "|r: " .. spellName .. " has less than 1 min left (" .. sec .. "s)!")
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff6600[BuffHelper]|r |cffffff00" .. name .. "|r: " .. spellName .. " has less than 1 min left (" .. sec .. "s)!")
         buffState[name][lowKey] = true
     elseif not lowTime or not hasBuff then
         buffState[name][lowKey] = false
     end
-    
+
     -- Save current state
     buffState[name][buffType] = hasBuff
-    
+
     return hasBuff
 end
 
 -- Update the buff panel with current party status
-function DruidBuffHelper:UpdateBuffPanel()
+function BuffHelper:UpdateBuffPanel()
     if not addonLoaded then return end
     if not mainFrame then return end
-    if not DruidBuffHelperDB or not DruidBuffHelperDB.enabled then return end
+    if not BuffHelperDB or not BuffHelperDB.enabled then return end
 
-    local isConfigMode = (DruidBuffHelperDB.mode == "config")
+    local profile = self:GetActiveProfile()
+    if not profile then return end
+
+    local isConfigMode = (BuffHelperDB.mode == "config")
+    local buffCount = table.getn(profile.buffs)
 
     -- Show/hide column headers based on mode
-    if isConfigMode then
-        columnHeaders.motw:Show()
-        columnHeaders.thorns:Show()
-    else
-        columnHeaders.motw:Hide()
-        columnHeaders.thorns:Hide()
+    for idx = 1, buffCount do
+        if columnHeaders[idx] then
+            if isConfigMode then
+                columnHeaders[idx]:Show()
+            else
+                columnHeaders[idx]:Hide()
+            end
+        end
     end
 
     -- Hide all rows first
     for i = 1, 5 do
         memberRows[i].name:SetText("")
-        memberRows[i].motwBtn:Hide()
-        memberRows[i].thornsBtn:Hide()
-        memberRows[i].motwCheckbox:Hide()
-        memberRows[i].thornsCheckbox:Hide()
+        for idx = 1, buffCount do
+            if memberRows[i].buffButtons[idx] then
+                memberRows[i].buffButtons[idx]:Hide()
+            end
+            if memberRows[i].buffCheckboxes[idx] then
+                memberRows[i].buffCheckboxes[idx]:Hide()
+            end
+        end
         memberRows[i].unit = nil
         memberRows[i].characterName = nil
         memberRows[i].visible = false
@@ -621,8 +704,8 @@ function DruidBuffHelper:UpdateBuffPanel()
 
     -- Layout constants
     local col1X = 8
-    local col2X = 95
-    local col3X = 120
+    local buffStartX = 95
+    local colWidth = 25
     local rowHeight = 22
     local startY = isConfigMode and -34 or -22
 
@@ -635,19 +718,23 @@ function DruidBuffHelper:UpdateBuffPanel()
         local row = memberRows[rowIndex]
         local yPos = startY - (rowIndex - 1) * rowHeight
 
-        -- Reposition elements based on mode
+        -- Reposition name
         row.name:ClearAllPoints()
         row.name:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col1X, yPos - 5)
 
-        row.motwBtn:ClearAllPoints()
-        row.motwBtn:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col2X, yPos)
-        row.thornsBtn:ClearAllPoints()
-        row.thornsBtn:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col3X, yPos)
+        -- Reposition buff buttons and checkboxes
+        for buffIdx, buffDef in ipairs(profile.buffs) do
+            local colX = buffStartX + (buffIdx - 1) * colWidth
 
-        row.motwCheckbox:ClearAllPoints()
-        row.motwCheckbox:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col2X, yPos)
-        row.thornsCheckbox:ClearAllPoints()
-        row.thornsCheckbox:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col3X, yPos)
+            if row.buffButtons[buffIdx] then
+                row.buffButtons[buffIdx]:ClearAllPoints()
+                row.buffButtons[buffIdx]:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", colX, yPos)
+            end
+            if row.buffCheckboxes[buffIdx] then
+                row.buffCheckboxes[buffIdx]:ClearAllPoints()
+                row.buffCheckboxes[buffIdx]:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", colX, yPos)
+            end
+        end
 
         local classColor = self:GetClassColor(unit)
         row.name:SetText(name)
@@ -659,34 +746,32 @@ function DruidBuffHelper:UpdateBuffPanel()
 
         if isConfigMode then
             -- Config mode: show checkboxes, hide buttons
-            row.motwCheckbox:SetChecked(tracking.motw)
-            row.motwCheckbox:Show()
-            row.thornsCheckbox:SetChecked(tracking.thorns)
-            row.thornsCheckbox:Show()
+            for buffIdx, buffDef in ipairs(profile.buffs) do
+                if row.buffCheckboxes[buffIdx] then
+                    row.buffCheckboxes[buffIdx]:SetChecked(tracking[buffDef.id])
+                    row.buffCheckboxes[buffIdx]:Show()
+                end
+            end
         else
             -- Operational mode: show buttons, hide checkboxes
-            row.motwBtn.unit = unit
-            row.thornsBtn.unit = unit
+            for buffIdx, buffDef in ipairs(profile.buffs) do
+                local btn = row.buffButtons[buffIdx]
+                if btn then
+                    btn.unit = unit
 
-            local hasMotw, motwTime = self:HasMarkOfTheWild(unit)
-            local hasThorns, thornsTime = self:HasThorns(unit)
+                    local hasBuff, buffTime = self:HasBuff(unit, buffDef)
 
-            -- Only alert for tracked buffs
-            if tracking.motw then
-                hasMotw = self:CheckBuffAndAlert(unit, name, "motw", hasMotw, motwTime)
+                    -- Only alert for tracked buffs
+                    if tracking[buffDef.id] then
+                        hasBuff = self:CheckBuffAndAlert(unit, name, buffDef.id, hasBuff, buffTime)
+                    end
+
+                    local lowTime = buffTime and buffTime < LOW_BUFF_THRESHOLD
+
+                    self:UpdateBuffButton(btn, hasBuff, lowTime, tracking[buffDef.id])
+                    btn:Show()
+                end
             end
-            if tracking.thorns then
-                hasThorns = self:CheckBuffAndAlert(unit, name, "thorns", hasThorns, thornsTime)
-            end
-
-            local lowMotw = motwTime and motwTime < LOW_BUFF_THRESHOLD
-            local lowThorns = thornsTime and thornsTime < LOW_BUFF_THRESHOLD
-
-            self:UpdateBuffButton(row.motwBtn, hasMotw, lowMotw)
-            self:UpdateBuffButton(row.thornsBtn, hasThorns, lowThorns)
-
-            row.motwBtn:Show()
-            row.thornsBtn:Show()
         end
 
         row.visible = true
@@ -721,10 +806,10 @@ function DruidBuffHelper:UpdateBuffPanel()
 end
 
 -- Called when addon is loaded
-function DruidBuffHelper:OnAddonLoaded()
+function BuffHelper:OnAddonLoaded()
     -- Initialize saved variables with defaults
-    if not DruidBuffHelperDB or not DruidBuffHelperDB.initialized then
-        DruidBuffHelperDB = {
+    if not BuffHelperDB or not BuffHelperDB.initialized then
+        BuffHelperDB = {
             initialized = true,
             enabled = true,
             position = nil,
@@ -734,11 +819,11 @@ function DruidBuffHelper:OnAddonLoaded()
     end
 
     -- Migration: add new fields to existing DB
-    if not DruidBuffHelperDB.mode then
-        DruidBuffHelperDB.mode = "operational"
+    if not BuffHelperDB.mode then
+        BuffHelperDB.mode = "operational"
     end
-    if not DruidBuffHelperDB.buffTracking then
-        DruidBuffHelperDB.buffTracking = {}
+    if not BuffHelperDB.buffTracking then
+        BuffHelperDB.buffTracking = {}
     end
 
     -- Initialize addon components
@@ -752,23 +837,23 @@ function DruidBuffHelper:OnAddonLoaded()
 
     -- Force show the panel and update it
     if mainFrame then
-        DruidBuffHelperDB.enabled = true
+        BuffHelperDB.enabled = true
         mainFrame:Show()
         self:UpdateBuffPanel()
     end
 
-    DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r loaded! Type /dbh for commands.")
+    DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper|r loaded! Type /dbh for commands.")
 end
 
 -- Called when player logs in
-function DruidBuffHelper:OnPlayerLogin()
+function BuffHelper:OnPlayerLogin()
     if addonLoaded then
         self:UpdateBuffPanel()
     end
 end
 
 -- Initialize slash commands
-function DruidBuffHelper:InitializeSlashCommands()
+function BuffHelper:InitializeSlashCommands()
     SLASH_DRUIDBUFFHELPER1 = "/druidbuffhelper"
     SLASH_DRUIDBUFFHELPER2 = "/dbh"
     
@@ -781,34 +866,56 @@ function DruidBuffHelper:InitializeSlashCommands()
         command = string.gsub(command, "^%s*(.-)%s*$", "%1")
 
         if command == "help" then
-            DruidBuffHelper:PrintHelp()
+            BuffHelper:PrintHelp()
         elseif command == "toggle" or command == "show" then
-            DruidBuffHelper:Toggle()
+            BuffHelper:Toggle()
         elseif command == "hide" then
-            DruidBuffHelper:HidePanel()
+            BuffHelper:HidePanel()
         elseif command == "reset" then
-            DruidBuffHelper:ResetPosition()
+            BuffHelper:ResetPosition()
         elseif command == "mode" then
-            DruidBuffHelper:ToggleMode()
+            BuffHelper:ToggleMode()
         elseif command == "config" then
-            DruidBuffHelperDB.mode = "config"
-            DruidBuffHelper:UpdateModeButton()
-            DruidBuffHelper:UpdateBuffPanel()
-            DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r: Config mode - configure buff tracking")
+            BuffHelperDB.mode = "config"
+            BuffHelper:UpdateModeButton()
+            BuffHelper:UpdateBuffPanel()
+            DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper|r: Config mode - configure buff tracking")
         elseif command == "op" or command == "operational" then
-            DruidBuffHelperDB.mode = "operational"
-            DruidBuffHelper:UpdateModeButton()
-            DruidBuffHelper:UpdateBuffPanel()
-            DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r: Operational mode - showing members needing buffs")
+            BuffHelperDB.mode = "operational"
+            BuffHelper:UpdateModeButton()
+            BuffHelper:UpdateBuffPanel()
+            DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper|r: Operational mode - showing members needing buffs")
+        elseif command == "debug" then
+            BuffHelper:DebugBuffs()
         else
-            DruidBuffHelper:Toggle()
+            BuffHelper:Toggle()
         end
     end
 end
 
+-- Debug function to show buff return values
+function BuffHelper:DebugBuffs()
+    DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper Debug|r - Player buffs (GetPlayerBuff API):")
+    local i = 0
+    while true do
+        local buffIndex = GetPlayerBuff(i, "HELPFUL")
+        if buffIndex < 0 then break end
+        local texture = GetPlayerBuffTexture(buffIndex)
+        local timeLeft = GetPlayerBuffTimeLeft(buffIndex)
+        local info = string.format("Buff %d: index=%d, texture=%s, timeLeft=%s",
+            i,
+            buffIndex,
+            tostring(texture),
+            tostring(timeLeft))
+        DEFAULT_CHAT_FRAME:AddMessage(info)
+        i = i + 1
+    end
+    DEFAULT_CHAT_FRAME:AddMessage("GetTime() = " .. tostring(GetTime()))
+end
+
 -- Print help message
-function DruidBuffHelper:PrintHelp()
-    DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r commands:")
+function BuffHelper:PrintHelp()
+    DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper|r commands:")
     DEFAULT_CHAT_FRAME:AddMessage("  /dbh - Toggle the buff panel")
     DEFAULT_CHAT_FRAME:AddMessage("  /dbh toggle - Toggle the buff panel")
     DEFAULT_CHAT_FRAME:AddMessage("  /dbh hide - Hide the buff panel")
@@ -820,36 +927,36 @@ function DruidBuffHelper:PrintHelp()
 end
 
 -- Toggle panel visibility
-function DruidBuffHelper:Toggle()
+function BuffHelper:Toggle()
     if mainFrame then
         if mainFrame:IsShown() then
             mainFrame:Hide()
-            DruidBuffHelperDB.enabled = false
-            DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r panel hidden")
+            BuffHelperDB.enabled = false
+            DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper|r panel hidden")
         else
             mainFrame:Show()
-            DruidBuffHelperDB.enabled = true
+            BuffHelperDB.enabled = true
             self:UpdateBuffPanel()
-            DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r panel shown")
+            DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper|r panel shown")
         end
     end
 end
 
 -- Hide panel
-function DruidBuffHelper:HidePanel()
+function BuffHelper:HidePanel()
     if mainFrame then
         mainFrame:Hide()
-        DruidBuffHelperDB.enabled = false
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r panel hidden")
+        BuffHelperDB.enabled = false
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper|r panel hidden")
     end
 end
 
 -- Reset panel position
-function DruidBuffHelper:ResetPosition()
+function BuffHelper:ResetPosition()
     if mainFrame then
         mainFrame:ClearAllPoints()
         mainFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-        DruidBuffHelperDB.position = nil
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00DruidBuffHelper|r position reset")
+        BuffHelperDB.position = nil
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper|r position reset")
     end
 end

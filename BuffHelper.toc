@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: BuffHelper
+## Notes: Class buff tracker for party members
+## Author: YourName
+## Version: 1.0.0
+## SavedVariables: BuffHelperDB
+
+BuffHelper.lua

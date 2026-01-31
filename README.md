@@ -1,16 +1,19 @@
-# Druid Buff Helper
+# Buff Helper
 
-WoW addon for **Vanilla 1.12** (Turtle WoW) that tracks **Mark of the Wild** and **Thorns** on you and your party. Shows who has each buff and lets you cast missing buffs with one click.
+WoW addon for **Vanilla 1.12** (Turtle WoW) that tracks class-specific buffs on you and your party. Shows who has each buff and lets you cast missing buffs with one click.
+
+**Currently supported:** Druid (Mark of the Wild, Thorns)
 
 ## Features
 
 - Panel lists you and up to 4 party members with class-colored names
-- Two icons per row: Mark of the Wild and Thorns (green = active, yellow = low time, red = missing)
+- Buff icons per row (green = active, yellow = low time, red = missing, purple = not tracked)
 - Click a red icon to target that unit and cast the spell
 - Party chat alert when someone loses a buff
 - Low time warning when buff has less than 1 minute remaining
 - Draggable panel; position is saved
 - **Two display modes** with configurable buff tracking per member
+- **Extensible profile system** for adding new classes
 
 ## Display Modes
 
@@ -24,9 +27,40 @@ WoW addon for **Vanilla 1.12** (Turtle WoW) that tracks **Mark of the Wild** and
 - Shows checkboxes instead of buff buttons
 - Displays ALL party members regardless of buff status
 - Check/uncheck boxes to configure which buffs to track for each member
-- Unchecked buffs won't trigger alerts and members won't appear for that buff
+- Unchecked buffs won't trigger alerts and show as purple
 - Settings are saved per character name (persists across sessions)
 - Click the **"C"** button (top-left) to switch to Operational mode
+
+## Adding New Class Profiles
+
+The addon uses an extensible profile system. To add support for another class, edit `BuffHelper.lua` and add an entry to the `BuffProfiles` table:
+
+```lua
+local BuffProfiles = {
+    DRUID = { ... },  -- existing
+
+    -- Example: Add Priest support
+    PRIEST = {
+        title = "Priest Buffs",
+        buffs = {
+            {
+                id = "fortitude",
+                spellName = "Power Word: Fortitude",
+                texture = "Interface\\Icons\\Spell_Holy_WordFortitude",
+                headerText = "PW",
+            },
+            {
+                id = "spirit",
+                spellName = "Divine Spirit",
+                texture = "Interface\\Icons\\Spell_Holy_DivineSpirit",
+                headerText = "DS",
+            },
+        }
+    },
+}
+```
+
+The addon automatically detects the player's class and loads the appropriate profile.
 
 ## Compatibility
 
@@ -35,7 +69,7 @@ WoW addon for **Vanilla 1.12** (Turtle WoW) that tracks **Mark of the Wild** and
 
 ## Installation
 
-1. Copy the `DruidBuffHelper` folder into your `Interface/AddOns/` directory.
+1. Copy the `BuffHelper` folder into your `Interface/AddOns/` directory.
 2. Restart the game or type `/reload`.
 
 ## Commands
@@ -50,9 +84,10 @@ WoW addon for **Vanilla 1.12** (Turtle WoW) that tracks **Mark of the Wild** and
 | `/dbh mode` | Toggle between Config and Operational mode |
 | `/dbh config` | Switch to Config mode |
 | `/dbh op` | Switch to Operational mode |
+| `/dbh debug` | Show buff debug info |
 | `/dbh help` | List commands |
 
 ## Files
 
-- `DruidBuffHelper.toc` — addon manifest
-- `DruidBuffHelper.lua` — logic and UI
+- `BuffHelper.toc` — addon manifest
+- `BuffHelper.lua` — logic and UI

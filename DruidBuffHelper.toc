@@ -1,8 +1,0 @@
-## Interface: 11200
-## Title: DruidBuffHelper
-## Notes: Druid buff tracker for party members
-## Author: YourName
-## Version: 1.0.0
-## SavedVariables: DruidBuffHelperDB
-
-DruidBuffHelper.lua
