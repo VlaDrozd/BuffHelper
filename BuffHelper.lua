@@ -36,12 +36,42 @@ local BuffProfiles = {
                 headerText = "TF",
                 lowTimeDefault = 2,
                 chatAlertDefault = false,
+                selfOnly = true,
+            },
+        }
+    },
+    MAGE = {
+        title = "Mage Buffs",
+        buffs = {
+            {
+                id = "ai",
+                spellName = "Arcane Intellect",
+                texture = "Interface\\Icons\\Spell_Holy_MagicalSentry",
+                headerText = "AI",
+                lowTimeDefault = 60,
+                chatAlertDefault = true,
+            },
+            {
+                id = "dampen",
+                spellName = "Dampen Magic",
+                texture = "Interface\\Icons\\Spell_Nature_AbolishMagic",
+                headerText = "DM",
+                lowTimeDefault = 60,
+                chatAlertDefault = true,
+            },
+            {
+                id = "frostarmor",
+                spellName = "Frost Armor",
+                texture = "Interface\\Icons\\Spell_Frost_FrostArmor02",
+                headerText = "FA",
+                lowTimeDefault = 60,
+                chatAlertDefault = false,
+                selfOnly = true,
             },
         }
     },
     -- Add other classes here, e.g.:
     -- PRIEST = { title = "Priest Buffs", buffs = { ... } },
-    -- MAGE = { title = "Mage Buffs", buffs = { ... } },
 }
 
 -- Active profile (cached after first detection)
@@ -343,8 +373,16 @@ function BuffHelper:UpdateModeButton()
 end
 
 -- Cast a buff on a unit
-function BuffHelper:CastBuffOnUnit(unit, spellName)
-    if not unit or not spellName then return end
+function BuffHelper:CastBuffOnUnit(unit, spellName, selfOnly)
+    if not spellName then return end
+
+    -- Self-only buffs: just cast without targeting
+    if selfOnly then
+        CastSpellByName(spellName)
+        return
+    end
+
+    if not unit then return end
     if not UnitExists(unit) then return end
     if UnitIsDeadOrGhost(unit) then
         DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper|r: Target is dead!")
@@ -354,7 +392,7 @@ function BuffHelper:CastBuffOnUnit(unit, spellName)
         DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00BuffHelper|r: Target is offline!")
         return
     end
-    
+
     -- Target the unit, cast, then target previous
     TargetUnit(unit)
     CastSpellByName(spellName)
@@ -399,11 +437,12 @@ function BuffHelper:CreateBuffButton(parent, name, xPos, yPos, spellName, iconTe
     -- Store spell name
     btn.spellName = spellName
     btn.unit = nil
-    
+    btn.selfOnly = false
+
     -- Click handler
     btn:SetScript("OnClick", function()
-        if this.unit and this.spellName then
-            BuffHelper:CastBuffOnUnit(this.unit, this.spellName)
+        if this.spellName then
+            BuffHelper:CastBuffOnUnit(this.unit, this.spellName, this.selfOnly)
         end
     end)
     
@@ -686,6 +725,7 @@ function BuffHelper:CreateBuffPanel()
             local btn = self:CreateBuffButton(mainFrame, "BuffHelperBtn"..buffDef.id..i, colX, yPos, buffDef.spellName, buffDef.texture)
             btn:Hide()
             btn.buffId = buffDef.id
+            btn.selfOnly = buffDef.selfOnly or false
             row.buffButtons[buffIdx] = btn
 
             -- Checkbox for config mode
