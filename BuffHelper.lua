@@ -70,8 +70,180 @@ local BuffProfiles = {
             },
         }
     },
-    -- Add other classes here, e.g.:
-    -- PRIEST = { title = "Priest Buffs", buffs = { ... } },
+    PRIEST = {
+        title = "Priest Buffs",
+        buffs = {
+            {
+                id = "fortitude",
+                spellName = "Power Word: Fortitude",
+                texture = "Interface\\Icons\\Spell_Holy_WordFortitude",
+                headerText = "PF",
+                lowTimeDefault = 60,
+                chatAlertDefault = true,
+            },
+            {
+                id = "divinespirit",
+                spellName = "Divine Spirit",
+                texture = "Interface\\Icons\\Spell_Holy_DivineSpirit",
+                headerText = "DS",
+                lowTimeDefault = 60,
+                chatAlertDefault = true,
+            },
+            {
+                id = "shadowprot",
+                spellName = "Shadow Protection",
+                texture = "Interface\\Icons\\Spell_Shadow_AntiShadow",
+                headerText = "SP",
+                lowTimeDefault = 60,
+                chatAlertDefault = true,
+            },
+            {
+                id = "innerfire",
+                spellName = "Inner Fire",
+                texture = "Interface\\Icons\\Spell_Holy_InnerFire",
+                headerText = "IF",
+                lowTimeDefault = 60,
+                chatAlertDefault = false,
+                selfOnly = true,
+            },
+            {
+                id = "shadowform",
+                spellName = "Shadowform",
+                texture = "Interface\\Icons\\Spell_Shadow_Shadowform",
+                headerText = "SF",
+                lowTimeDefault = 5,
+                chatAlertDefault = false,
+                selfOnly = true,
+            },
+        }
+    },
+    PALADIN = {
+        title = "Paladin Buffs",
+        buffs = {
+            {
+                id = "might",
+                spellName = "Blessing of Might",
+                texture = "Interface\\Icons\\Spell_Holy_FistOfJustice",
+                headerText = "Mi",
+                lowTimeDefault = 60,
+                chatAlertDefault = true,
+            },
+            {
+                id = "wisdom",
+                spellName = "Blessing of Wisdom",
+                texture = "Interface\\Icons\\Spell_Holy_SealOfWisdom",
+                headerText = "Wi",
+                lowTimeDefault = 60,
+                chatAlertDefault = true,
+            },
+            {
+                id = "kings",
+                spellName = "Blessing of Kings",
+                texture = "Interface\\Icons\\Spell_Magic_MageArmor",
+                headerText = "Ki",
+                lowTimeDefault = 60,
+                chatAlertDefault = true,
+            },
+            {
+                id = "salvation",
+                spellName = "Blessing of Salvation",
+                texture = "Interface\\Icons\\Spell_Holy_SealOfSalvation",
+                headerText = "Sa",
+                lowTimeDefault = 60,
+                chatAlertDefault = true,
+            },
+            {
+                id = "devotion",
+                spellName = "Devotion Aura",
+                texture = "Interface\\Icons\\Spell_Holy_DevotionAura",
+                headerText = "DA",
+                lowTimeDefault = 60,
+                chatAlertDefault = false,
+                selfOnly = true,
+            },
+        }
+    },
+    WARRIOR = {
+        title = "Warrior Buffs",
+        buffs = {
+            {
+                id = "battleshout",
+                spellName = "Battle Shout",
+                texture = "Interface\\Icons\\Ability_Warrior_BattleShout",
+                headerText = "BS",
+                lowTimeDefault = 30,
+                chatAlertDefault = true,
+            },
+            {
+                id = "commandingshout",
+                spellName = "Commanding Shout",
+                texture = "Interface\\Icons\\Ability_Warrior_RallyingCry",
+                headerText = "CS",
+                lowTimeDefault = 30,
+                chatAlertDefault = true,
+            },
+        }
+    },
+    SHAMAN = {
+        title = "Shaman Buffs",
+        buffs = {
+            {
+                id = "windfury",
+                spellName = "Windfury Totem",
+                texture = "Interface\\Icons\\Spell_Nature_Windfury",
+                headerText = "WF",
+                lowTimeDefault = 30,
+                chatAlertDefault = true,
+            },
+            {
+                id = "strengthofearth",
+                spellName = "Strength of Earth Totem",
+                texture = "Interface\\Icons\\Spell_Nature_EarthBindTotem",
+                headerText = "SE",
+                lowTimeDefault = 30,
+                chatAlertDefault = true,
+            },
+            {
+                id = "graceofair",
+                spellName = "Grace of Air Totem",
+                texture = "Interface\\Icons\\Spell_Nature_InvisibilityTotem",
+                headerText = "GA",
+                lowTimeDefault = 30,
+                chatAlertDefault = true,
+            },
+            {
+                id = "manaspring",
+                spellName = "Mana Spring Totem",
+                texture = "Interface\\Icons\\Spell_Nature_ManaRegenTotem",
+                headerText = "MS",
+                lowTimeDefault = 30,
+                chatAlertDefault = true,
+            },
+            {
+                id = "lightningshield",
+                spellName = "Lightning Shield",
+                texture = "Interface\\Icons\\Spell_Nature_LightningShield",
+                headerText = "LS",
+                lowTimeDefault = 60,
+                chatAlertDefault = false,
+                selfOnly = true,
+            },
+        }
+    },
+    WARLOCK = {
+        title = "Warlock Buffs",
+        buffs = {
+            {
+                id = "demonarmor",
+                spellName = "Demon Armor",
+                texture = "Interface\\Icons\\Spell_Shadow_RagingScream",
+                headerText = "DA",
+                lowTimeDefault = 60,
+                chatAlertDefault = false,
+                selfOnly = true,
+            },
+        }
+    },
 }
 
 -- Active profile (cached after first detection)
