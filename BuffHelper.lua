@@ -18,18 +18,24 @@ local BuffProfiles = {
                 spellName = "Mark of the Wild",
                 texture = "Interface\\Icons\\Spell_Nature_Regeneration",
                 headerText = "MW",
+                lowTimeDefault = 60,
+                chatAlertDefault = true,
             },
             {
                 id = "thorns",
                 spellName = "Thorns",
                 texture = "Interface\\Icons\\Spell_Nature_Thorns",
                 headerText = "Th",
+                lowTimeDefault = 60,
+                chatAlertDefault = true,
             },
             {
                 id = "tigersfury",
                 spellName = "Tiger's Fury",
                 texture = "Interface\\Icons\\Ability_Mount_JungleTiger",
                 headerText = "TF",
+                lowTimeDefault = 2,
+                chatAlertDefault = false,
             },
         }
     },
@@ -40,9 +46,6 @@ local BuffProfiles = {
 
 -- Active profile (cached after first detection)
 local activeProfile = nil
-
--- Low buff threshold (seconds)
-local LOW_BUFF_THRESHOLD = 60
 
 -- Colors
 local COLOR_GREEN = {0, 1, 0, 1}
@@ -59,6 +62,7 @@ local mainFrame = nil
 local memberRows = {}
 local modeButton = nil
 local columnHeaders = {}
+local thresholdInputs = {}
 
 -- Buff state tracking for alerts
 local buffState = {}
@@ -219,6 +223,62 @@ function BuffHelper:SetBuffTracking(characterName, buffType, enabled)
     BuffHelperDB.buffTracking[characterName][buffType] = enabled
 end
 
+-- Get low time threshold for a buff (returns saved value or default from profile)
+function BuffHelper:GetLowTimeThreshold(buffId)
+    -- Check saved thresholds first
+    if BuffHelperDB and BuffHelperDB.lowTimeThresholds and BuffHelperDB.lowTimeThresholds[buffId] then
+        return BuffHelperDB.lowTimeThresholds[buffId]
+    end
+
+    -- Fall back to default from buff definition
+    local buffDef = self:GetBuffDef(buffId)
+    if buffDef and buffDef.lowTimeDefault then
+        return buffDef.lowTimeDefault
+    end
+
+    -- Ultimate fallback
+    return 60
+end
+
+-- Set low time threshold for a buff
+function BuffHelper:SetLowTimeThreshold(buffId, seconds)
+    if not buffId then return end
+
+    if not BuffHelperDB.lowTimeThresholds then
+        BuffHelperDB.lowTimeThresholds = {}
+    end
+
+    BuffHelperDB.lowTimeThresholds[buffId] = seconds
+end
+
+-- Get chat alert setting for a buff (returns saved value or default from profile)
+function BuffHelper:GetChatAlert(buffId)
+    -- Check saved settings first
+    if BuffHelperDB and BuffHelperDB.chatAlerts and BuffHelperDB.chatAlerts[buffId] ~= nil then
+        return BuffHelperDB.chatAlerts[buffId]
+    end
+
+    -- Fall back to default from buff definition
+    local buffDef = self:GetBuffDef(buffId)
+    if buffDef and buffDef.chatAlertDefault ~= nil then
+        return buffDef.chatAlertDefault
+    end
+
+    -- Ultimate fallback
+    return true
+end
+
+-- Set chat alert setting for a buff
+function BuffHelper:SetChatAlert(buffId, enabled)
+    if not buffId then return end
+
+    if not BuffHelperDB.chatAlerts then
+        BuffHelperDB.chatAlerts = {}
+    end
+
+    BuffHelperDB.chatAlerts[buffId] = enabled
+end
+
 -- Check if member should be shown in operational mode
 function BuffHelper:ShouldShowMember(unit, name)
     -- In config mode, always show all members
@@ -248,7 +308,8 @@ function BuffHelper:ShouldShowMember(unit, name)
             if tracking[buffDef.id] then
                 local hasBuff, timeLeft = self:HasBuff(unit, buffDef)
                 if not hasBuff then return true end
-                if timeLeft and timeLeft < LOW_BUFF_THRESHOLD then return true end
+                local threshold = self:GetLowTimeThreshold(buffDef.id)
+                if timeLeft and timeLeft < threshold then return true end
             end
         end
     end
@@ -510,6 +571,95 @@ function BuffHelper:CreateBuffPanel()
         columnHeaders[buffIdx] = header
     end
 
+    -- Create threshold label (in name column, same row as inputs)
+    local thresholdLabel = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    thresholdLabel:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", col1X, -37)
+    thresholdLabel:SetText("Alert (s):")
+    thresholdLabel:SetTextColor(0.6, 0.6, 0.6, 1)
+    thresholdLabel:Hide()
+    mainFrame.thresholdLabel = thresholdLabel
+
+    -- Create threshold input EditBoxes (below headers, only in config mode)
+    for buffIdx, buffDef in ipairs(profile.buffs) do
+        local colX = buffStartX + (buffIdx - 1) * colWidth
+
+        local input = CreateFrame("EditBox", "BuffHelperThreshold"..buffDef.id, mainFrame)
+        input:SetWidth(22)
+        input:SetHeight(16)
+        input:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", colX, -34)
+        input:SetFontObject(GameFontNormalSmall)
+        input:SetAutoFocus(false)
+        input:SetNumeric(true)
+        input:SetMaxLetters(3)
+        input:SetTextInsets(2, 2, 0, 0)
+        input:SetJustifyH("CENTER")
+
+        -- Background
+        input:SetBackdrop({
+            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            tile = true,
+            tileSize = 8,
+            edgeSize = 8,
+            insets = { left = 2, right = 2, top = 2, bottom = 2 }
+        })
+        input:SetBackdropColor(0, 0, 0, 0.8)
+        input:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
+
+        -- Set initial value from saved or default
+        local threshold = self:GetLowTimeThreshold(buffDef.id)
+        input:SetText(tostring(threshold))
+        input.buffId = buffDef.id
+        input.hasFocus = false
+
+        -- Save on enter or focus lost
+        input:SetScript("OnEnterPressed", function()
+            local val = tonumber(this:GetText())
+            if val and val > 0 then
+                BuffHelper:SetLowTimeThreshold(this.buffId, val)
+            else
+                -- Reset to current value if invalid
+                local current = BuffHelper:GetLowTimeThreshold(this.buffId)
+                this:SetText(tostring(current))
+            end
+            this:ClearFocus()
+        end)
+
+        input:SetScript("OnEscapePressed", function()
+            local current = BuffHelper:GetLowTimeThreshold(this.buffId)
+            this:SetText(tostring(current))
+            this:ClearFocus()
+        end)
+
+        input:SetScript("OnEditFocusGained", function()
+            this.hasFocus = true
+        end)
+
+        input:SetScript("OnEditFocusLost", function()
+            this.hasFocus = false
+            local val = tonumber(this:GetText())
+            if val and val > 0 then
+                BuffHelper:SetLowTimeThreshold(this.buffId, val)
+            else
+                local current = BuffHelper:GetLowTimeThreshold(this.buffId)
+                this:SetText(tostring(current))
+            end
+        end)
+
+        input:SetScript("OnEnter", function()
+            GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Yellow warning threshold (seconds)", 1, 1, 1)
+            GameTooltip:Show()
+        end)
+
+        input:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
+
+        input:Hide()
+        thresholdInputs[buffIdx] = input
+    end
+
     -- Create rows for player + 4 party members
     local rowHeight = 22
     local startY = -22
@@ -638,12 +788,16 @@ function BuffHelper:CheckBuffAndAlert(unit, name, buffType, hasBuff, timeLeft)
     end
 
     local prevState = buffState[name][buffType]
-    local lowTime = timeLeft and timeLeft < LOW_BUFF_THRESHOLD
+    local threshold = self:GetLowTimeThreshold(buffType)
+    local lowTime = timeLeft and timeLeft < threshold
     local lowKey = buffType .. "_lowAlert"
     local prevLowAlert = buffState[name][lowKey]
 
+    -- Check if chat alerts are enabled for this buff
+    local chatAlertEnabled = self:GetChatAlert(buffType)
+
     -- Alert if buff was lost (had it before, doesn't have it now)
-    if prevState and not hasBuff then
+    if prevState and not hasBuff and chatAlertEnabled then
         local numParty = GetNumPartyMembers()
         if numParty and numParty > 0 then
             SendChatMessage(name .. " needs " .. spellName .. "!", "PARTY")
@@ -652,10 +806,12 @@ function BuffHelper:CheckBuffAndAlert(unit, name, buffType, hasBuff, timeLeft)
         end
     end
 
-    -- Alert if less than 1 min left (once per drop below threshold)
+    -- Alert if less than threshold (once per drop below threshold)
     if hasBuff and lowTime and not prevLowAlert then
-        local sec = math.floor(timeLeft)
-        DEFAULT_CHAT_FRAME:AddMessage("|cffff6600[BuffHelper]|r |cffffff00" .. name .. "|r: " .. spellName .. " has less than 1 min left (" .. sec .. "s)!")
+        if chatAlertEnabled then
+            local sec = math.floor(timeLeft)
+            DEFAULT_CHAT_FRAME:AddMessage("|cffff6600[BuffHelper]|r |cffffff00" .. name .. "|r: " .. spellName .. " has less than " .. threshold .. "s left (" .. sec .. "s)!")
+        end
         buffState[name][lowKey] = true
     elseif not lowTime or not hasBuff then
         buffState[name][lowKey] = false
@@ -679,13 +835,34 @@ function BuffHelper:UpdateBuffPanel()
     local isConfigMode = (BuffHelperDB.mode == "config")
     local buffCount = table.getn(profile.buffs)
 
-    -- Show/hide column headers based on mode
+    -- Show/hide column headers, threshold label and inputs based on mode
+    if mainFrame.thresholdLabel then
+        if isConfigMode then
+            mainFrame.thresholdLabel:Show()
+        else
+            mainFrame.thresholdLabel:Hide()
+        end
+    end
+
     for idx = 1, buffCount do
         if columnHeaders[idx] then
             if isConfigMode then
                 columnHeaders[idx]:Show()
             else
                 columnHeaders[idx]:Hide()
+            end
+        end
+        if thresholdInputs[idx] then
+            if isConfigMode then
+                -- Only update value if input doesn't have focus (user not editing)
+                if not thresholdInputs[idx].hasFocus then
+                    local buffDef = profile.buffs[idx]
+                    local threshold = self:GetLowTimeThreshold(buffDef.id)
+                    thresholdInputs[idx]:SetText(tostring(threshold))
+                end
+                thresholdInputs[idx]:Show()
+            else
+                thresholdInputs[idx]:Hide()
             end
         end
     end
@@ -713,7 +890,7 @@ function BuffHelper:UpdateBuffPanel()
     local buffStartX = 95
     local colWidth = 25
     local rowHeight = 22
-    local startY = isConfigMode and -34 or -22
+    local startY = isConfigMode and -52 or -22  -- Extra offset in config mode for headers + threshold inputs
 
     -- Helper function to display a member
     local function displayMember(unit, name)
@@ -772,7 +949,8 @@ function BuffHelper:UpdateBuffPanel()
                         hasBuff = self:CheckBuffAndAlert(unit, name, buffDef.id, hasBuff, buffTime)
                     end
 
-                    local lowTime = buffTime and buffTime < LOW_BUFF_THRESHOLD
+                    local threshold = self:GetLowTimeThreshold(buffDef.id)
+                    local lowTime = buffTime and buffTime < threshold
 
                     self:UpdateBuffButton(btn, hasBuff, lowTime, tracking[buffDef.id])
                     btn:Show()
@@ -806,7 +984,7 @@ function BuffHelper:UpdateBuffPanel()
 
     -- Adjust frame height based on visible rows
     local visibleRows = rowIndex - 1
-    local headerOffset = isConfigMode and 12 or 0
+    local headerOffset = isConfigMode and 30 or 0  -- Extra space for headers + threshold inputs
     local newHeight = 28 + headerOffset + (visibleRows * 22)
     mainFrame:SetHeight(math.max(50, newHeight))
 end
@@ -821,6 +999,8 @@ function BuffHelper:OnAddonLoaded()
             position = nil,
             mode = "operational",
             buffTracking = {},
+            lowTimeThresholds = {},
+            chatAlerts = {},
         }
     end
 
@@ -830,6 +1010,12 @@ function BuffHelper:OnAddonLoaded()
     end
     if not BuffHelperDB.buffTracking then
         BuffHelperDB.buffTracking = {}
+    end
+    if not BuffHelperDB.lowTimeThresholds then
+        BuffHelperDB.lowTimeThresholds = {}
+    end
+    if not BuffHelperDB.chatAlerts then
+        BuffHelperDB.chatAlerts = {}
     end
 
     -- Initialize addon components
