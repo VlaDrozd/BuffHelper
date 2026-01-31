@@ -31,37 +31,6 @@ WoW addon for **Vanilla 1.12** (Turtle WoW) that tracks class-specific buffs on 
 - Settings are saved per character name (persists across sessions)
 - Click the **"C"** button (top-left) to switch to Operational mode
 
-## Adding New Class Profiles
-
-The addon uses an extensible profile system. To add support for another class, edit `BuffHelper.lua` and add an entry to the `BuffProfiles` table:
-
-```lua
-local BuffProfiles = {
-    DRUID = { ... },  -- existing
-
-    -- Example: Add Priest support
-    PRIEST = {
-        title = "Priest Buffs",
-        buffs = {
-            {
-                id = "fortitude",
-                spellName = "Power Word: Fortitude",
-                texture = "Interface\\Icons\\Spell_Holy_WordFortitude",
-                headerText = "PW",
-            },
-            {
-                id = "spirit",
-                spellName = "Divine Spirit",
-                texture = "Interface\\Icons\\Spell_Holy_DivineSpirit",
-                headerText = "DS",
-            },
-        }
-    },
-}
-```
-
-The addon automatically detects the player's class and loads the appropriate profile.
-
 ## Compatibility
 
 - **Interface:** 11200 (Vanilla 1.12)
