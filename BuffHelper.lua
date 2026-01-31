@@ -25,6 +25,12 @@ local BuffProfiles = {
                 texture = "Interface\\Icons\\Spell_Nature_Thorns",
                 headerText = "Th",
             },
+            {
+                id = "tigersfury",
+                spellName = "Tiger's Fury",
+                texture = "Interface\\Icons\\Ability_Mount_JungleTiger",
+                headerText = "TF",
+            },
         }
     },
     -- Add other classes here, e.g.:
